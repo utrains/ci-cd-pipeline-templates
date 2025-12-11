@@ -1,0 +1,35 @@
+name-template: "v$NEXT_PATCH_VERSION"
+tag-template: "v$NEXT_PATCH_VERSION"
+
+categories:
+  - title: "🚀 Added"
+    labels:
+      - feature
+      - enhancement
+
+  - title: "🛠 Changed"
+    labels:
+      - change
+
+  - title: "🐛 Fixed"
+    labels:
+      - bug
+
+  - title: "⚠️ Breaking Changes"
+    labels:
+      - breaking-change
+
+change-template: "- $TITLE (#$NUMBER)"
+
+template: |
+  # 📦 $RELEASE_TITLE
+
+  ## 🚀 Summary
+  $CHANGES
+
+  ## 🔖 Version
+  **Tag:** $RELEASE_TAG  
+  **Published:** $DATE
+
+  ## 📚 Notes
+  This release was generated automatically using Release Drafter.

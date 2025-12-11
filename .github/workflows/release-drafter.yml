@@ -1,0 +1,64 @@
+name: "Release Drafter + Changelog Updater"
+
+on:
+  push:
+    branches:
+      - main
+
+  release:
+    types: [published]
+
+jobs:
+
+  # -----------------------------
+  # 1. Release Draft Automation
+  # -----------------------------
+  release_draft:
+    # Only run on main branch push
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run Release Drafter
+        uses: release-drafter/release-drafter@v6
+        with:
+          config-name: release-drafter.yml
+
+
+  # -----------------------------
+  # 2. CHANGELOG Auto-Update Job
+  # -----------------------------
+  update_changelog:
+    if: github.event_name == 'release' && github.event.action == 'published'
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Update CHANGELOG.md with release notes
+        run: |
+          NEW_TAG="${{ github.event.release.tag_name }}"
+          RELEASE_DATE=$(date +'%Y-%m-%d')
+          RELEASE_BODY="${{ github.event.release.body }}"
+
+          echo "Updating CHANGELOG.md for release $NEW_TAG"
+
+          {
+            echo "## $NEW_TAG — $RELEASE_DATE"
+            echo ""
+            echo "$RELEASE_BODY"
+            echo ""
+            cat CHANGELOG.md
+          } > CHANGELOG.tmp
+
+          mv CHANGELOG.tmp CHANGELOG.md
+
+      - name: Commit & push updated CHANGELOG.md
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          git add CHANGELOG.md
+          git commit -m "Update CHANGELOG.md for release ${{ github.event.release.tag_name }}"
+          git push
