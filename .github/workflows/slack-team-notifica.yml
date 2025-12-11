@@ -1,0 +1,21 @@
+name: Notification Template
+
+on:
+  workflow_call:
+    inputs:
+      message:
+        required: true
+        type: string
+      webhook_url:
+        required: true
+        type: string
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send Notification
+        run: |
+          curl -X POST -H 'Content-Type: application/json' \
+            -d "{\"text\": \"${{ inputs.message }}\"}" \
+            ${{ inputs.webhook_url }}

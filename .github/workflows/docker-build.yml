@@ -1,0 +1,42 @@
+name: Docker Build Template
+
+on:
+  workflow_call:
+    inputs:
+      image_name:
+        type: string
+        required: true
+      dockerfile:
+        default: "./Dockerfile"
+        type: string
+      context:
+        default: "."
+        type: string
+    secrets:
+      aws_role:
+        required: true
+
+jobs:
+  docker_build:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-east-1
+          role-to-assume: ${{ secrets.aws_role }}
+
+      - name: Login to ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build & Push Docker Image
+        run: |
+          IMAGE=${{ inputs.image_name }}
+          docker build -t $IMAGE -f ${{ inputs.dockerfile }} ${{ inputs.context }}
+          docker push $IMAGE

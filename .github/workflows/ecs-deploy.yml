@@ -1,0 +1,39 @@
+name: ECS Deploy Template
+
+on:
+  workflow_call:
+    inputs:
+      cluster:
+        type: string
+        required: true
+      service:
+        type: string
+        required: true
+      image:
+        type: string
+        required: true
+    secrets:
+      aws_role:
+        required: true
+
+jobs:
+  deploy_ecs:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Configure AWS OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.aws_role }}
+          aws-region: us-east-1
+
+      - name: Deploy to ECS
+        run: |
+          aws ecs update-service \
+            --cluster ${{ inputs.cluster }} \
+            --service ${{ inputs.service }} \
+            --force-new-deployment \
+            --region us-east-1
