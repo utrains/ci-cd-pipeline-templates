@@ -1,0 +1,31 @@
+name: Node.js Build Template
+
+on:
+  workflow_call:
+    inputs:
+      node_version:
+        default: "20"
+        type: string
+      install_cmd:
+        default: "npm install"
+        type: string
+      build_cmd:
+        default: "npm run build"
+        type: string
+
+jobs:
+  node_build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node_version }}
+
+      - name: Install dependencies
+        run: ${{ inputs.install_cmd }}
+
+      - name: Build project
+        run: ${{ inputs.build_cmd }}

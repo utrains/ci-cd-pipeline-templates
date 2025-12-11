@@ -1,0 +1,25 @@
+name: Go Build Template
+
+on:
+  workflow_call:
+    inputs:
+      go_version:
+        default: "1.22"
+        type: string
+
+jobs:
+  build_go:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ inputs.go_version }}
+
+      - name: Build
+        run: go build ./...
+
+      - name: Test
+        run: go test ./...

@@ -1,0 +1,50 @@
+name: Terraform Template
+
+on:
+  workflow_call:
+    inputs:
+      tf_version:
+        default: "1.9.5"
+        type: string
+      working_directory:
+        type: string
+        default: "./"
+    secrets:
+      aws_role_to_assume:
+        required: false
+
+jobs:
+  terraform:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+
+    env:
+      AWS_ROLE_TO_ASSUME: ${{ secrets.aws_role_to_assume }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ inputs.tf_version }}
+
+      - name: AWS OIDC Login (optional)
+        if: env.AWS_ROLE_TO_ASSUME != ''
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-east-1
+          role-to-assume: ${{ env.AWS_ROLE_TO_ASSUME }}
+
+      - name: Terraform Init
+        working-directory: ${{ inputs.working_directory }}
+        run: terraform init
+
+      - name: Terraform Validate
+        working-directory: ${{ inputs.working_directory }}
+        run: terraform validate
+
+      - name: Terraform Plan
+        working-directory: ${{ inputs.working_directory }}
+        run: terraform plan

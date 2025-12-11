@@ -1,0 +1,42 @@
+name: SonarQube Scan Template
+
+on:
+  workflow_call:
+    inputs:
+      sonar_host:
+        required: true
+        type: string
+      project_name:
+        required: true
+        type: string
+      project_key:
+        required: true
+        type: string
+      quality_gate:
+        required: false
+        type: boolean
+        default: true
+    secrets:
+      sonar_token:
+        required: true
+
+jobs:
+  sonar_scan:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: sonarsource/sonarqube-scan-action@v2
+        with:
+          host-url: ${{ inputs.sonar_host }}
+          token: ${{ secrets.sonar_token }}
+          projectKey: ${{ inputs.project_key }}
+          projectName: ${{ inputs.project_name }}
+
+      - name: Check Quality Gate
+        if: ${{ inputs.quality_gate }}
+        uses: sonarsource/sonarqube-quality-gate-action@v1
+        with:
+          host-url: ${{ inputs.sonar_host }}
+          sonar-token: ${{ secrets.sonar_token }}
