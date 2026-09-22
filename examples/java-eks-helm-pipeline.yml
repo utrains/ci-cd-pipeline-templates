@@ -1,0 +1,132 @@
+# Example: Java (Maven) service → container → EKS with Helm (staging → approval → production)
+# Copy to <your-app-repo>/.github/workflows/pipeline.yml and adjust the values marked ← .
+#
+# Needs: secrets AWS_ROLE_STAGING, AWS_ROLE_PROD, SONAR_TOKEN, SLACK_WEBHOOK_URL;
+#        GitHub Environments "staging" and "production" (production with required reviewers);
+#        a chart at ./charts/orders with values-staging.yaml / values-production.yaml.
+
+name: Pipeline
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+    tags: ["v*.*.*"]
+
+permissions: {}
+
+concurrency:
+  group: pipeline-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    permissions:
+      contents: read
+    uses: utrains/ci-cd-pipeline-templates/.github/workflows/build-java.yml@v2
+    with:
+      java_version: "21"
+      build_tool: maven
+      # Upload the whole target/ dir: Sonar needs the compiled classes + JaCoCo report.
+      artifact_path: target/
+      artifact_name: orders-target
+
+  sonar:
+    needs: build
+    permissions:
+      contents: read
+    uses: utrains/ci-cd-pipeline-templates/.github/workflows/sonar.yml@v2
+    with:
+      sonar_host: https://sonar.example.com # ←
+      project_key: orders-service # ←
+      project_name: Orders Service # ←
+      coverage_artifact: orders-target
+      coverage_artifact_path: target
+      extra_args: -Dsonar.java.binaries=target/classes -Dsonar.coverage.jacoco.xmlReportPaths=target/site/jacoco/jacoco.xml
+    secrets:
+      sonar_token: ${{ secrets.SONAR_TOKEN }}
+
+  secrets:
+    permissions:
+      contents: read
+      security-events: write
+    uses: utrains/ci-cd-pipeline-templates/.github/workflows/secret-scan.yml@v2
+
+  helm_lint:
+    permissions:
+      contents: read
+      security-events: write
+    uses: utrains/ci-cd-pipeline-templates/.github/workflows/iac-scan.yml@v2
+    with:
+      directory: charts/
+      framework: helm,kubernetes,dockerfile
+
+  image:
+    needs: [build, secrets]
+    permissions:
+      contents: read
+      id-token: write
+      packages: write
+    uses: utrains/ci-cd-pipeline-templates/.github/workflows/docker-build.yml@v2
+    with:
+      image_name: orders-service # ←
+      platforms: linux/amd64,linux/arm64
+      push: ${{ github.event_name != 'pull_request' }}
+    secrets:
+      aws_role: ${{ secrets.AWS_ROLE_STAGING }}
+
+  deploy_staging:
+    if: github.event_name != 'pull_request'
+    needs: [image, sonar, helm_lint]
+    permissions:
+      contents: read
+      id-token: write
+    uses: utrains/ci-cd-pipeline-templates/.github/workflows/deploy-eks-helm.yml@v2
+    with:
+      environment: staging
+      cluster_name: staging-eks # ←
+      namespace: orders
+      release_name: orders
+      chart: ./charts/orders
+      values_files: |
+        ./charts/orders/values.yaml
+        ./charts/orders/values-staging.yaml
+      image_repository: ${{ needs.image.outputs.image }}
+      image_tag: sha-${{ github.sha }} # immutable tag produced by docker-build.yml
+    secrets:
+      aws_role: ${{ secrets.AWS_ROLE_STAGING }}
+
+  # Production only for release tags; the "production" environment requires approval.
+  deploy_production:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [image, deploy_staging]
+    permissions:
+      contents: read
+      id-token: write
+    uses: utrains/ci-cd-pipeline-templates/.github/workflows/deploy-eks-helm.yml@v2
+    with:
+      environment: production
+      environment_url: https://orders.example.com # ←
+      cluster_name: prod-eks # ←
+      namespace: orders
+      release_name: orders
+      chart: ./charts/orders
+      values_files: |
+        ./charts/orders/values.yaml
+        ./charts/orders/values-production.yaml
+      image_repository: ${{ needs.image.outputs.image }}
+      image_tag: sha-${{ github.sha }} # immutable tag produced by docker-build.yml
+    secrets:
+      aws_role: ${{ secrets.AWS_ROLE_PROD }}
+
+  notify:
+    if: always() && github.event_name != 'pull_request'
+    needs: [deploy_staging, deploy_production]
+    permissions:
+      contents: read
+    uses: utrains/ci-cd-pipeline-templates/.github/workflows/notify-slack.yml@v2
+    with:
+      status: ${{ contains(needs.*.result, 'failure') && 'failure' || 'success' }}
+      message: Orders service deployment finished for `${{ github.ref_name }}`.
+    secrets:
+      slack_webhook_url: ${{ secrets.SLACK_WEBHOOK_URL }}

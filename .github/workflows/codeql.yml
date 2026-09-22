@@ -1,0 +1,96 @@
+name: Scan · CodeQL (SAST)
+
+# Reusable workflow: GitHub CodeQL static application security testing.
+# Results appear in the repository's Security → Code scanning tab.
+# Docs: docs/workflows/codeql.md
+
+on:
+  workflow_call:
+    inputs:
+      languages:
+        description: 'JSON array of CodeQL languages, e.g. ["javascript-typescript","python"]. Valid: actions, c-cpp, csharp, go, java-kotlin, javascript-typescript, python, ruby, rust, swift.'
+        type: string
+        default: '["javascript-typescript"]'
+      build_mode:
+        description: "none | autobuild | manual. Compiled languages usually need autobuild or manual."
+        type: string
+        default: none
+      build_cmd:
+        description: Build command when build_mode is manual.
+        type: string
+        default: ""
+      queries:
+        description: "Query suite: security-extended | security-and-quality | (empty = default)."
+        type: string
+        default: security-extended
+      config_file:
+        description: Path to a CodeQL config file in the calling repository.
+        type: string
+        default: ""
+      java_version:
+        description: Install this JDK before analysis (compiled Java/Kotlin). Empty = runner default.
+        type: string
+        default: ""
+      dotnet_version:
+        description: Install this .NET SDK before analysis. Empty = runner default.
+        type: string
+        default: ""
+      runs_on:
+        description: Runner label, or a JSON array of labels.
+        type: string
+        default: ubuntu-latest
+      timeout_minutes:
+        description: Job timeout in minutes.
+        type: number
+        default: 60
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: CodeQL (${{ matrix.language }})
+    runs-on: ${{ startsWith(inputs.runs_on, '[') && fromJSON(inputs.runs_on) || inputs.runs_on }}
+    timeout-minutes: ${{ inputs.timeout_minutes }}
+    permissions:
+      contents: read
+      actions: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        language: ${{ fromJSON(inputs.languages) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - if: inputs.java_version != ''
+        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          distribution: temurin
+          java-version: ${{ inputs.java_version }}
+
+      - if: inputs.dotnet_version != ''
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: ${{ inputs.dotnet_version }}
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@1c5b675653bb5c22dbe9b12b556ec555138e09fd # v4.38.1
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ inputs.build_mode }}
+          queries: ${{ inputs.queries }}
+          config-file: ${{ inputs.config_file }}
+
+      - name: Build
+        if: inputs.build_mode == 'manual'
+        env:
+          CMD: ${{ inputs.build_cmd }}
+        run: eval "$CMD"
+
+      - name: Analyze
+        uses: github/codeql-action/analyze@1c5b675653bb5c22dbe9b12b556ec555138e09fd # v4.38.1
+        with:
+          category: /language:${{ matrix.language }}

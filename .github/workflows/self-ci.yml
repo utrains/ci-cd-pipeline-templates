@@ -1,0 +1,65 @@
+name: Self CI · Lint workflows
+
+# CI for THIS repository: every change to the templates is linted with actionlint (syntax,
+# expressions, shellcheck) and audited with zizmor (GitHub Actions security) before merge.
+
+on:
+  pull_request:
+    paths: [".github/**", "examples/**", "docs/**", "scripts/**"]
+  push:
+    branches: [main]
+    paths: [".github/**", "examples/**", "docs/**", "scripts/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: self-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  actionlint:
+    name: actionlint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Run actionlint
+        run: |
+          docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:1.7.12 -color \
+            .github/workflows/*.yml examples/*.yml
+
+  zizmor:
+    name: zizmor
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Run zizmor
+        run: pipx run zizmor==1.30.1 --offline --min-severity medium .github/workflows examples
+
+  docs:
+    name: Docs in sync with workflows
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check generated reference sections
+        run: |
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install --quiet pyyaml==6.0.2
+          "$RUNNER_TEMP/venv/bin/python" scripts/generate_docs.py --check
+
+  pr_title:
+    name: PR title
+    if: github.event_name == 'pull_request'
+    permissions:
+      pull-requests: read
+    uses: ./.github/workflows/pr-title-lint.yml

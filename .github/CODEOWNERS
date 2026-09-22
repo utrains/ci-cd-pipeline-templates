@@ -1,0 +1,4 @@
+# Every change to the shared templates needs a review from the platform team.
+# Replace @utrains/platform-team with the team that owns CI/CD in your organization.
+*                    @utrains/platform-team
+/.github/workflows/  @utrains/platform-team

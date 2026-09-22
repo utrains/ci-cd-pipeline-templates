@@ -1,0 +1,9 @@
+# zizmor configuration (used by self-ci.yml).
+rules:
+  unpinned-uses:
+    config:
+      policies:
+        # Our own reusable workflows are consumed by major-version tag (see README → Versioning).
+        "utrains/ci-cd-pipeline-templates/*": ref-pin
+        # Everything third-party must be pinned to a full commit SHA.
+        "*": hash-pin

@@ -1,397 +1,160 @@
-# 📘 Utrains CI/CD Reusable Pipeline Templates
+# CI/CD Pipeline Templates
 
-Welcome to the **Utrains CI/CD Template Repository**.
-
-This repository contains **enterprise-ready reusable GitHub Action workflows** that can be called from any application repository.  
-These templates encapsulate **build, scan, deploy, approval, and DevOps automation logic**, ensuring:
-
-- Standardization across all applications  
-- Reduced code duplication  
-- Faster onboarding for new developers  
-- Cleaner, safer CI/CD pipelines  
-
-All templates are stored under:
-
-```
-.github/workflows/
-```
-
-You can call any template from *another* repo using:
+Reusable GitHub Actions workflows for building, scanning, packaging and deploying applications and
+infrastructure. Each application repository keeps a short pipeline file that calls these templates, so
+build, security and deploy logic is written, reviewed and patched **in one place**.
 
 ```yaml
-uses: Utrains/pipeline-templates/.github/workflows/<template>.yml@v1
-```
-
----
-
-# 📚 Template Overview
-
-| Template | Purpose |
-|---------|---------|
-| `sonar.yml` | Run SonarQube code scan & quality gate checks |
-| `build-java.yml` | Build & test Java/Maven applications |
-| `build-dotnet.yml` | Build & test .NET Core applications |
-| `build-go.yml` | Build & test Go applications |
-| `build-node.yml` | Build Node.js applications |
-| `terraform.yml` | Run Terraform init/validate/plan (supports OIDC) |
-| `docker-build.yml` | Build & push Docker image to ECR |
-| `trivy-scan.yml` | Perform Trivy image scan |
-| `approval.yml` | Manual approval stage using GitHub Environments |
-| `deploy-eks-helm.yml` | Deploy workloads to EKS using Helm |
-| `deploy-eks-argocd.yml` | Deploy workloads to EKS using ArgoCD |
-
----
-
-# 🧩 How to Use These Templates From Your Application Repo
-
-Create a workflow in your app repo:
-
-```
-.github/workflows/main.yml
-```
-
-Call any template like:
-
-```yaml
+# <your-app-repo>/.github/workflows/pipeline.yml
 jobs:
-  sonar:
-    uses: Utrains/pipeline-templates/.github/workflows/sonar.yml@v1
-    with:
-      sonar_host: "https://sonar.example.com"
-      project_name: "my-app"
-      project_key: "my-app-key"
-    secrets:
-      sonar_token: ${{ secrets.SONAR_TOKEN }}
+  build:
+    permissions:
+      contents: read
+    uses: utrains/ci-cd-pipeline-templates/.github/workflows/build-node.yml@v2
+```
+
+> **New here?** Read [Getting started](docs/getting-started.md) first. It covers the one-time
+> setup: repository access, AWS OIDC, environments and secrets.
+
+---
+
+## Catalog
+
+Every template has its own page with a usage example and a generated reference of its inputs, secrets,
+outputs and the permissions a caller must grant.
+
+### Build & test
+
+| Template | What it does |
+|---|---|
+| [`build-node.yml`](docs/workflows/build-node.md) | npm / yarn / pnpm: install, lint, test, build; uploads coverage and build output |
+| [`build-java.yml`](docs/workflows/build-java.md) | Maven or Gradle (wrapper-aware), private repos, test and JaCoCo reports |
+| [`build-dotnet.yml`](docs/workflows/build-dotnet.md) | restore, build, test with coverage, optional `dotnet publish` |
+| [`build-go.yml`](docs/workflows/build-go.md) | vet, golangci-lint, race tests with coverage, build |
+| [`build-python.yml`](docs/workflows/build-python.md) | pip / poetry / uv: install, lint, pytest, optional wheel |
+
+### Security & quality
+
+| Template | What it does |
+|---|---|
+| [`sonar.yml`](docs/workflows/sonar.md) | SonarQube / SonarCloud analysis with a blocking quality gate |
+| [`codeql.yml`](docs/workflows/codeql.md) | GitHub CodeQL SAST for one or more languages |
+| [`dependency-review.yml`](docs/workflows/dependency-review.md) | Blocks PRs that add vulnerable or disallowed-license dependencies |
+| [`secret-scan.yml`](docs/workflows/secret-scan.md) | gitleaks secret detection (PR diff, push range or full history) |
+| [`trivy-scan.yml`](docs/workflows/trivy-scan.md) | Trivy scan of an image, the filesystem (dependencies) or IaC config |
+| [`iac-scan.yml`](docs/workflows/iac-scan.md) | Checkov policy-as-code for Terraform, Kubernetes, Helm, Dockerfile |
+| [`pr-title-lint.yml`](docs/workflows/pr-title-lint.md) | Enforces Conventional Commit PR titles |
+
+### Package & deploy
+
+| Template | What it does |
+|---|---|
+| [`docker-build.yml`](docs/workflows/docker-build.md) | BuildKit build → Trivy gate → push to ECR / GHCR / Docker Hub, with SBOM, provenance and cosign signing |
+| [`ecs-deploy.yml`](docs/workflows/ecs-deploy.md) | New task-definition revision with the new image; waits for the service to become stable |
+| [`deploy-eks-helm.yml`](docs/workflows/deploy-eks-helm.md) | `helm upgrade --install --atomic` into EKS |
+| [`deploy-eks-argocd.yml`](docs/workflows/deploy-eks-argocd.md) | Argo CD sync, then waits until Synced and Healthy |
+| [`gitops-update.yml`](docs/workflows/gitops-update.md) | Bumps the image tag in a GitOps config repo, by PR or direct commit |
+| [`terraform.yml`](docs/workflows/terraform.md) | fmt, validate, tflint, plan (as a PR comment), then applies the saved plan behind an approval |
+
+### Flow control & ops
+
+| Template | What it does |
+|---|---|
+| [`approval.yml`](docs/workflows/approval.md) | Manual approval gate backed by a GitHub Environment |
+| [`notify-slack.yml`](docs/workflows/notify-slack.md) | Colour-coded pipeline status posted to Slack |
+| [`release-drafter.yml`](docs/workflows/release-drafter.md) | Draft releases from labelled PRs; changelog PR on publish |
+
+---
+
+## Complete pipelines
+
+Copy one of these into an application repository and change the values marked `# ←`.
+
+| Example | Flow |
+|---|---|
+| [`node-ecs-pipeline.yml`](examples/node-ecs-pipeline.yml) | Node → CodeQL, Sonar, secrets, dependency review → ECR image → ECS dev → **approval** → ECS prod → Slack |
+| [`java-eks-helm-pipeline.yml`](examples/java-eks-helm-pipeline.yml) | Maven → Sonar, Checkov → multi-arch image → EKS staging (Helm) → EKS production on release tags |
+| [`python-gitops-argocd-pipeline.yml`](examples/python-gitops-argocd-pipeline.yml) | uv → Trivy fs → signed GHCR image → GitOps commit and Argo CD sync (dev) → GitOps **PR** (prod) |
+| [`terraform-pipeline.yml`](examples/terraform-pipeline.yml) | Checkov → plan per environment on PRs → apply dev → **approval** → apply prod |
+| [`scheduled-security.yml`](examples/scheduled-security.yml) | Nightly full-history secret scan, dependency and running-image CVE scans, CodeQL |
+
+```mermaid
+flowchart LR
+  subgraph CI["Every PR and push"]
+    B[build-*] --> S[sonar]
+    C[codeql]
+    G[secret-scan]
+    D[dependency-review]
+  end
+  B --> I["docker-build<br/>(Trivy gate, SBOM, sign)"]
+  G --> I
+  I --> DEV["deploy → dev"]
+  S --> DEV
+  C --> DEV
+  DEV --> A{{"approval<br/>(environment reviewers)"}}
+  A --> PROD["deploy → prod"]
+  PROD --> N[notify-slack]
 ```
 
 ---
 
-# 🟦 1. SonarQube Scan Template
+## Conventions all templates follow
 
-**File:** `.github/workflows/sonar.yml`  
-**Purpose:** Runs a full SonarQube scan with optional quality gate enforcement.
-
-### Inputs
-
-| Input | Required | Description |
-|-------|----------|-------------|
-| `sonar_host` | Yes | Sonar server URL |
-| `project_name` | Yes | Sonar project name |
-| `project_key` | Yes | Sonar project key |
-| `quality_gate` | No | Enable quality gate check |
-
-### Secrets
-
-| Secret | Description |
-|--------|-------------|
-| `sonar_token` | Sonar authentication token |
-
-### Example
-
-```yaml
-jobs:
-  sonar:
-    uses: Utrains/pipeline-templates/.github/workflows/sonar.yml@v1
-    with:
-      sonar_host: "https://sonar.mycompany.com"
-      project_name: "backend"
-      project_key: "backend"
-      quality_gate: true
-    secrets:
-      sonar_token: ${{ secrets.SONAR_TOKEN }}
-```
+| Area | Convention |
+|---|---|
+| **Supply chain** | Every third-party action is pinned to a full commit SHA with a `# vX.Y.Z` comment. Dependabot updates them weekly after a 7-day cooldown. Downloaded CLIs (gitleaks, Argo CD) are checksum-verified. |
+| **Least privilege** | Each job declares only the `permissions` it needs, and every doc lists what the calling job must grant. Callers should set `permissions: {}` at the top level and grant per job. |
+| **No script injection** | Inputs reach shell scripts only through `env:`, never as `${{ }}` inside `run:`. |
+| **Credentials** | Cloud access uses OIDC (`id-token: write`) only. There are no long-lived AWS keys. `actions/checkout` never persists the token. |
+| **Deploy safety** | Deploys run in GitHub Environments (approvals, scoped secrets, history), deploys to the same target are queued with `concurrency`, and every deploy waits for health and rolls back or fails loudly. |
+| **Runners** | Every template accepts `runs_on`: a label (`ubuntu-latest`) or a JSON array for self-hosted runners (`'["self-hosted","linux","prod"]'`). |
+| **Timeouts** | Every job has a `timeout-minutes`. Most are configurable with `timeout_minutes`. |
+| **Traceability** | Images carry OCI labels, an SBOM and SLSA provenance. Deploys write a step summary and link to a GitHub deployment. |
 
 ---
 
-# 🟦 2. Java Maven Build Template
+## Versioning
 
-**File:** `.github/workflows/build-java.yml`
+Templates are released with semantic versioning. Callers choose how strictly to pin:
 
-### Inputs
+| Reference | Gets | Recommended for |
+|---|---|---|
+| `@v2` | Every backwards-compatible release of v2 (moving tag) | Most application repos |
+| `@v2.1.0` | Exactly that release | Change-controlled or regulated repos |
+| `@<commit-sha>` | Exactly that commit, immutable | Highest assurance. Dependabot can bump it |
+| `@main` | Unreleased changes | Testing the templates only; **never production** |
 
-| Input | Default | Description |
-|-------|---------|-------------|
-| `java_version` | `17` | JDK version |
-| `run_tests` | `true` | Run unit tests |
+Breaking changes (removed or renamed inputs, changed defaults that alter behaviour) only ship in a new major version,
+with migration notes in the [CHANGELOG](CHANGELOG.md).
 
-### Example
-
-```yaml
-jobs:
-  build_java:
-    uses: Utrains/pipeline-templates/.github/workflows/build-java.yml@v1
-    with:
-      java_version: "21"
-      run_tests: true
-```
+**Releasing (maintainers):**
+1. Merge labelled PRs to `main`. The release draft updates itself.
+2. Publish the draft, e.g. `v2.1.0`.
+3. Move the major tag: `git tag -f v2 v2.1.0 && git push -f origin v2`.
 
 ---
 
-# 🟦 3. .NET Build Template
+## Repository layout
 
-**File:** `.github/workflows/build-dotnet.yml`
-
-### Inputs
-
-| Input | Default | Description |
-|--------|---------|-------------|
-| `dotnet_version` | `8.0` | .NET SDK version |
-| `project_path` | `./` | Path to the .NET solution |
-
-### Example
-
-```yaml
-jobs:
-  build_dotnet:
-    uses: Utrains-pipeline-templates/.github/workflows/build-dotnet.yml@v1
-    with:
-      dotnet_version: "8.0"
-      project_path: "./src/MyApp"
+```
+.github/
+  workflows/           reusable templates (+ self-ci.yml / release-drafter.yml for this repo)
+  release-drafter.yml  release-notes config
+  dependabot.yml       keeps pinned action SHAs current
+  zizmor.yml           security-lint policy
+  CODEOWNERS           platform team owns all changes
+docs/
+  getting-started.md   one-time setup: access, OIDC, environments, secrets
+  workflows/*.md       one page per template (reference tables are generated)
+examples/              complete caller pipelines to copy
+scripts/
+  generate_docs.py     regenerates the reference tables in docs/workflows
 ```
 
----
-
-# 🟦 4. Go Build Template
-
-**File:** `.github/workflows/build-go.yml`
-
-### Inputs
-
-| Input | Default | Description |
-|--------|---------|-------------|
-| `go_version` | `1.22` | Go version |
-
-### Example
-
-```yaml
-jobs:
-  build_go:
-    uses: Utrains-pipeline-templates/.github/workflows/build-go.yml@v1
-    with:
-      go_version: "1.22"
-```
-
----
-
-# 🟦 5. Node.js Build Template
-
-**File:** `.github/workflows/build-node.yml`
-
-### Inputs
-
-| Input | Default | Description |
-|--------|---------|-------------|
-| `node_version` | `20` | Node.js version |
-| `install_cmd` | `npm install` | Install command |
-| `build_cmd` | `npm run build` | Build command |
-
-### Example
-
-```yaml
-jobs:
-  build_node:
-    uses: Utrains-pipeline-templates/.github/workflows/build-node.yml@v1
-    with:
-      node_version: "20"
-```
-
----
-
-# 🟦 6. Terraform Template
-
-**File:** `.github/workflows/terraform.yml`
-
-### Inputs
-
-| Input | Default | Description |
-|--------|---------|-------------|
-| `tf_version` | `1.9.5` | Terraform version |
-| `working_directory` | `./` | Terraform root directory |
-
-### Secrets
-
-| Secret | Description |
-|--------|-------------|
-| `aws_role_to_assume` | IAM role for OIDC auth |
-
-### Example
-
-```yaml
-jobs:
-  terraform:
-    uses: Utrains-pipeline-templates/.github/workflows/terraform.yml@v1
-    with:
-      working_directory: "infra/"
-    secrets:
-      aws_role_to_assume: ${{ secrets.IAM_ROLE }}
-```
-
----
-
-# 🟦 7. Docker Build & Push Template
-
-**File:** `.github/workflows/docker-build.yml`
-
-### Inputs
-
-| Input | Required | Description |
-|--------|---------|-------------|
-| `image_name` | Yes | ECR image URI |
-| `dockerfile` | No | Dockerfile path |
-| `context` | No | Build context |
-
-### Secrets
-
-| Secret | Description |
-|--------|-------------|
-| `aws_role` | IAM role for ECR push |
-
-### Example
-
-```yaml
-jobs:
-  docker:
-    uses: Utrains-pipeline-templates/.github/workflows/docker-build.yml@v1
-    with:
-      image_name: "123456789012.dkr.ecr.us-east-1.amazonaws.com/app:latest"
-    secrets:
-      aws_role: ${{ secrets.AWS_ROLE }}
-```
-
----
-
-# 🟦 8. Trivy Image Scan Template
-
-**File:** `.github/workflows/trivy-scan.yml`
-
-### Inputs
-
-| Input | Required | Description |
-|--------|----------|-------------|
-| `image` | Yes | Docker image to scan |
-
-### Example
-
-```yaml
-jobs:
-  trivy:
-    uses: Utrains-pipeline-templates/.github/workflows/trivy-scan.yml@v1
-    with:
-      image: "123456789012.dkr.ecr.us-east-1.amazonaws.com/app:latest"
-```
-
----
-
-# 🟦 9. Approval Workflow Template
-
-**File:** `.github/workflows/approval.yml`
-
-### Inputs
-
-| Input | Required | Description |
-|--------|----------|-------------|
-| `environment` | Yes | GitHub environment name |
-| `message` | No | Approval message |
-
-### Example
-
-```yaml
-jobs:
-  approve:
-    uses: Utrains-pipeline-templates/.github/workflows/approval.yml@v1
-    with:
-      environment: "prod"
-      message: "Prod deployment approval required."
-```
-
----
-
-# 🟦 10. EKS Helm Deployment Template
-
-**File:** `.github/workflows/deploy-eks-helm.yml`
-
-### Inputs
-
-| Input | Required | Description |
-|--------|---------|-------------|
-| `cluster_name` | Yes | EKS cluster name |
-| `region` | Yes | AWS region |
-| `namespace` | Yes | Kubernetes namespace |
-| `release_name` | Yes | Helm release name |
-| `chart_path` | Yes | Helm chart location |
-| `chart_version` | No | Chart version |
-| `values_file` | No | Values file |
-
-### Secrets
-
-| Secret | Description |
-|--------|-------------|
-| `aws_role` | IAM role for EKS access |
-
-### Example
-
-```yaml
-jobs:
-  deploy:
-    uses: Utrains-pipeline-templates/.github/workflows/deploy-eks-helm.yml@v1
-    with:
-      cluster_name: "prod-eks"
-      region: "us-east-1"
-      namespace: "app"
-      release_name: "app-release"
-      chart_path: "./chart"
-      values_file: "./chart/values-prod.yaml"
-    secrets:
-      aws_role: ${{ secrets.AWS_ROLE }}
-```
-
----
-
-# 🟦 11. EKS ArgoCD Deployment Template
-
-**File:** `.github/workflows/deploy-eks-argocd.yml`
-
-### Inputs
-
-| Input | Required | Description |
-|--------|---------|-------------|
-| `cluster_name` | Yes | EKS cluster name |
-| `region` | Yes | AWS region |
-| `argocd_server` | Yes | ArgoCD API |
-| `argocd_app` | Yes | ArgoCD Application name |
-| `repo_url` | Yes | GitOps repo URL |
-| `path` | Yes | Path to manifests |
-| `revision` | No | Git branch |
-| `dest_namespace` | Yes | Kubernetes namespace |
-| `dest_server` | Yes | Cluster API endpoint |
-
-### Secrets
-
-| Secret | Description |
-|--------|-------------|
-| `aws_role` | IAM role for cluster access |
-| `argocd_token` | ArgoCD auth token |
-
-### Example
-
-```yaml
-jobs:
-  deploy_argocd:
-    uses: Utrains-pipeline-templates/.github/workflows/deploy-eks-argocd.yml@v1
-    with:
-      cluster_name: "prod"
-      region: "us-east-1"
-      argocd_server: "argocd.example.com"
-      argocd_app: "myapp-prod"
-      repo_url: "https://github.com/org/app-config.git"
-      path: "environments/prod"
-      dest_namespace: "app"
-      dest_server: "https://kubernetes.default.svc"
-    secrets:
-      aws_role: ${{ secrets.AWS_PROD_ROLE }}
-      argocd_token: ${{ secrets.ARGOCD_TOKEN }}
-```
-
----
-
-# 🎉 End of Documentation
+## Contributing
+
+1. Branch and make the change. New third-party actions **must** be SHA-pinned.
+2. Update the usage section of `docs/workflows/<name>.md`, then run `python scripts/generate_docs.py`.
+3. Open a PR with a Conventional Commit title and one release label (`feature`, `fix`, `breaking-change`, …).
+4. `self-ci.yml` runs **actionlint**, **zizmor** and the docs check. All must pass, and CODEOWNERS must approve.
+5. Test from a real caller repository by pointing it at your branch: `uses: …/build-node.yml@my-branch`.

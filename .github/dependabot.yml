@@ -1,0 +1,18 @@
+# Keeps every SHA-pinned action in the templates (and examples) up to date.
+# Dependabot updates both the SHA and the trailing "# vX.Y.Z" comment.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    cooldown:
+      default-days: 7 # let new releases soak for a week before adopting them
+    groups:
+      actions:
+        patterns: ["*"]
+        update-types: [minor, patch]
+    labels: [dependencies]
+    commit-message:
+      prefix: "chore(deps)"

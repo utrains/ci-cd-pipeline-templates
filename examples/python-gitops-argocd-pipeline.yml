@@ -1,0 +1,90 @@
+# Example: Python API → GHCR → GitOps (Argo CD)
+# Copy to <your-app-repo>/.github/workflows/pipeline.yml and adjust the values marked ← .
+#
+# dev:   the image tag is committed straight to the config repo; Argo CD auto-syncs, and we wait for it.
+# prod:  a PR is opened against the config repo; merging it is the production approval.
+#
+# Needs: secrets GITOPS_TOKEN (contents + pull-requests write on the config repo; a GitHub App
+#        token is recommended), ARGOCD_TOKEN; GitHub Environment "dev".
+
+name: Pipeline
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions: {}
+
+jobs:
+  build:
+    permissions:
+      contents: read
+    uses: utrains/ci-cd-pipeline-templates/.github/workflows/build-python.yml@v2
+    with:
+      python_version: "3.13"
+      package_manager: uv
+      lint_cmd: ruff check .
+      test_cmd: pytest --junitxml=test-results/junit.xml --cov --cov-report=xml
+
+  deps:
+    permissions:
+      contents: read
+      security-events: write
+    uses: utrains/ci-cd-pipeline-templates/.github/workflows/trivy-scan.yml@v2
+    with:
+      scan_type: fs
+
+  image:
+    needs: [build, deps]
+    permissions:
+      contents: read
+      id-token: write
+      packages: write
+    uses: utrains/ci-cd-pipeline-templates/.github/workflows/docker-build.yml@v2
+    with:
+      registry: ghcr
+      image_name: ${{ github.repository }}
+      push: ${{ github.event_name != 'pull_request' }}
+      sign: true
+
+  gitops_dev:
+    if: github.ref == 'refs/heads/main'
+    needs: image
+    permissions:
+      contents: read
+    uses: utrains/ci-cd-pipeline-templates/.github/workflows/gitops-update.yml@v2
+    with:
+      config_repo: my-org/k8s-config # ←
+      file_path: apps/pricing-api/dev/values.yaml # ←
+      yaml_path: .image.tag
+      value: sha-${{ github.sha }} # immutable tag produced by docker-build.yml
+      create_pr: false
+    secrets:
+      gitops_token: ${{ secrets.GITOPS_TOKEN }}
+
+  sync_dev:
+    needs: gitops_dev
+    permissions:
+      contents: read
+    uses: utrains/ci-cd-pipeline-templates/.github/workflows/deploy-eks-argocd.yml@v2
+    with:
+      environment: dev
+      argocd_server: argocd.example.com # ←
+      argocd_app: pricing-api-dev # ←
+    secrets:
+      argocd_token: ${{ secrets.ARGOCD_TOKEN }}
+
+  gitops_prod_pr:
+    needs: [image, sync_dev]
+    permissions:
+      contents: read
+    uses: utrains/ci-cd-pipeline-templates/.github/workflows/gitops-update.yml@v2
+    with:
+      config_repo: my-org/k8s-config # ←
+      file_path: apps/pricing-api/prod/values.yaml # ←
+      yaml_path: .image.tag
+      value: sha-${{ github.sha }}
+      create_pr: true
+    secrets:
+      gitops_token: ${{ secrets.GITOPS_TOKEN }}

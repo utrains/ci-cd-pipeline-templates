@@ -1,25 +1,146 @@
-name: Java Maven Build Template
+name: Build · Java (Maven / Gradle)
+
+# Reusable workflow: compile, test and package a Java project with Maven or Gradle.
+# Uses the project's wrapper (mvnw / gradlew) when present.
+# Docs: docs/workflows/build-java.md
 
 on:
   workflow_call:
     inputs:
       java_version:
-        default: "17"
+        description: JDK version.
         type: string
+        default: "21"
+      java_distribution:
+        description: JDK distribution (temurin, corretto, zulu, microsoft, ...).
+        type: string
+        default: temurin
+      build_tool:
+        description: "maven | gradle"
+        type: string
+        default: maven
+      working_directory:
+        description: Directory containing pom.xml or build.gradle(.kts).
+        type: string
+        default: "."
       run_tests:
-        default: true
+        description: Run unit tests.
         type: boolean
+        default: true
+      build_args:
+        description: "Arguments passed to the build tool. Defaults to 'clean verify' (Maven) or 'build' (Gradle)."
+        type: string
+        default: ""
+      maven_server_id:
+        description: settings.xml <server> id for a private Maven repository (used with maven_username / maven_password).
+        type: string
+        default: ""
+      artifact_path:
+        description: Glob of packages to upload, relative to working_directory (e.g. target/*.jar). Leave empty to skip.
+        type: string
+        default: ""
+      artifact_name:
+        description: Base name for uploaded artifacts (test reports / coverage get a suffix).
+        type: string
+        default: java-build
+      retention_days:
+        description: Artifact retention in days.
+        type: number
+        default: 7
+      runs_on:
+        description: Runner label, or a JSON array of labels.
+        type: string
+        default: ubuntu-latest
+      timeout_minutes:
+        description: Job timeout in minutes.
+        type: number
+        default: 45
+    secrets:
+      maven_username:
+        description: Username for the private Maven repository (maven_server_id).
+        required: false
+      maven_password:
+        description: Password / token for the private Maven repository (maven_server_id).
+        required: false
+    outputs:
+      artifact_name:
+        description: Base name for uploaded artifacts (test reports / coverage get a suffix).
+        value: ${{ jobs.build.outputs.artifact_name }}
+
+permissions:
+  contents: read
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    name: Build & test
+    runs-on: ${{ startsWith(inputs.runs_on, '[') && fromJSON(inputs.runs_on) || inputs.runs_on }}
+    timeout-minutes: ${{ inputs.timeout_minutes }}
+    outputs:
+      artifact_name: ${{ inputs.artifact_path != '' && inputs.artifact_name || '' }}
+    defaults:
+      run:
+        working-directory: ${{ inputs.working_directory }}
+    env:
+      MAVEN_USERNAME: ${{ secrets.maven_username }}
+      MAVEN_PASSWORD: ${{ secrets.maven_password }}
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-java@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          distribution: 'temurin'
+          persist-credentials: false
+
+      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          distribution: ${{ inputs.java_distribution }}
           java-version: ${{ inputs.java_version }}
+          cache: ${{ inputs.build_tool == 'maven' && 'maven' || '' }}
+          server-id: ${{ inputs.maven_server_id }}
+          server-username-env-var: MAVEN_USERNAME
+          server-password-env-var: MAVEN_PASSWORD
+
+      - name: Set up Gradle
+        if: inputs.build_tool == 'gradle'
+        uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
 
       - name: Build with Maven
-        run: mvn clean package -DskipTests=${{ !inputs.run_tests }}
+        if: inputs.build_tool == 'maven'
+        env:
+          ARGS: ${{ inputs.build_args || 'clean verify' }}
+          SKIP_TESTS: ${{ !inputs.run_tests }}
+        run: |
+          MVN=mvn
+          [ -x ./mvnw ] && MVN=./mvnw
+          eval "$MVN -B -ntp $ARGS -DskipTests=$SKIP_TESTS"
+
+      - name: Build with Gradle
+        if: inputs.build_tool == 'gradle'
+        env:
+          ARGS: ${{ inputs.build_args || 'build' }}
+          RUN_TESTS: ${{ inputs.run_tests }}
+        run: |
+          GRADLE=gradle
+          [ -x ./gradlew ] && GRADLE=./gradlew
+          EXTRA=""
+          [ "$RUN_TESTS" = "true" ] || EXTRA="-x test"
+          eval "$GRADLE --no-daemon $ARGS $EXTRA"
+
+      - name: Upload test reports
+        if: always() && inputs.run_tests
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ inputs.artifact_name }}-test-reports
+          path: |
+            ${{ inputs.working_directory }}/**/target/surefire-reports/
+            ${{ inputs.working_directory }}/**/target/site/jacoco/
+            ${{ inputs.working_directory }}/**/build/test-results/
+            ${{ inputs.working_directory }}/**/build/reports/
+          retention-days: ${{ inputs.retention_days }}
+          if-no-files-found: ignore
+
+      - name: Upload build artifact
+        if: inputs.artifact_path != ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ inputs.artifact_name }}
+          path: ${{ inputs.working_directory }}/${{ inputs.artifact_path }}
+          retention-days: ${{ inputs.retention_days }}
+          if-no-files-found: error

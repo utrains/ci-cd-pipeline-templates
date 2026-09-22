@@ -1,0 +1,63 @@
+# Example: Terraform infrastructure repo
+# PR:    IaC scan + plan for every environment, posted as PR comments
+# main:  apply dev automatically, then apply prod after approval of the "prod-infra" environment
+#
+# Layout assumed: infra/envs/dev and infra/envs/prod, each a Terraform root with its own backend.
+# Needs: secrets AWS_TF_ROLE_DEV, AWS_TF_ROLE_PROD; GitHub Environments "dev-infra" and
+#        "prod-infra" (prod-infra with required reviewers).
+
+name: Infrastructure
+
+on:
+  pull_request:
+    paths: ["infra/**"]
+  push:
+    branches: [main]
+    paths: ["infra/**"]
+
+permissions: {}
+
+# One infra pipeline at a time per branch; never cancel a running apply.
+concurrency:
+  group: infra-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  iac_scan:
+    permissions:
+      contents: read
+      security-events: write
+    uses: utrains/ci-cd-pipeline-templates/.github/workflows/iac-scan.yml@v2
+    with:
+      directory: infra/
+      framework: terraform
+
+  dev:
+    needs: iac_scan
+    permissions:
+      contents: read
+      id-token: write
+      pull-requests: write
+    uses: utrains/ci-cd-pipeline-templates/.github/workflows/terraform.yml@v2
+    with:
+      working_directory: infra/envs/dev
+      action: ${{ github.event_name == 'push' && 'apply' || 'plan' }}
+      environment: dev-infra
+      var_file: dev.tfvars
+    secrets:
+      aws_role_to_assume: ${{ secrets.AWS_TF_ROLE_DEV }}
+
+  prod:
+    needs: [iac_scan, dev]
+    permissions:
+      contents: read
+      id-token: write
+      pull-requests: write
+    uses: utrains/ci-cd-pipeline-templates/.github/workflows/terraform.yml@v2
+    with:
+      working_directory: infra/envs/prod
+      action: ${{ github.event_name == 'push' && 'apply' || 'plan' }}
+      environment: prod-infra
+      var_file: prod.tfvars
+    secrets:
+      aws_role_to_assume: ${{ secrets.AWS_TF_ROLE_PROD }}

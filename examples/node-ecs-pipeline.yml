@@ -1,0 +1,139 @@
+# Example: Node.js service → container → Amazon ECS (dev → approval → prod)
+# Copy to <your-app-repo>/.github/workflows/pipeline.yml and adjust the values marked ← .
+#
+# PR:         build/test · secrets · dependency review · CodeQL · Sonar · image build + scan (no push)
+# main push:  all of the above → push image → deploy dev → approve → deploy prod → Slack
+#
+# Needs: repo/org variables AWS_ACCOUNT_ID; secrets AWS_DEPLOY_ROLE_DEV, AWS_DEPLOY_ROLE_PROD,
+#        SONAR_TOKEN, SLACK_WEBHOOK_URL; GitHub Environments "dev" and "prod" (prod with reviewers).
+
+name: Pipeline
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions: {} # everything is granted per job below
+
+concurrency:
+  group: pipeline-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # ─── Continuous integration ───────────────────────────────────────────────
+  build:
+    permissions:
+      contents: read
+    uses: utrains/ci-cd-pipeline-templates/.github/workflows/build-node.yml@v2
+    with:
+      node_version_file: .nvmrc
+      lint_cmd: npm run lint
+      test_cmd: npm test -- --coverage
+      artifact_path: dist/
+      artifact_name: web-dist
+
+  secrets:
+    permissions:
+      contents: read
+      security-events: write
+    uses: utrains/ci-cd-pipeline-templates/.github/workflows/secret-scan.yml@v2
+
+  dependencies:
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+      pull-requests: write
+    uses: utrains/ci-cd-pipeline-templates/.github/workflows/dependency-review.yml@v2
+    with:
+      fail_on_severity: high
+      deny_licenses: GPL-3.0-only, AGPL-3.0-only
+
+  codeql:
+    permissions:
+      contents: read
+      actions: read
+      security-events: write
+    uses: utrains/ci-cd-pipeline-templates/.github/workflows/codeql.yml@v2
+    with:
+      languages: '["javascript-typescript"]'
+
+  sonar:
+    needs: build
+    permissions:
+      contents: read
+    uses: utrains/ci-cd-pipeline-templates/.github/workflows/sonar.yml@v2
+    with:
+      sonar_host: https://sonar.example.com # ←
+      project_key: my-org_web-app # ←
+      project_name: Web App # ←
+      coverage_artifact: web-dist-coverage
+      extra_args: -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info
+    secrets:
+      sonar_token: ${{ secrets.SONAR_TOKEN }}
+
+  # ─── Package ──────────────────────────────────────────────────────────────
+  image:
+    needs: [build, secrets]
+    permissions:
+      contents: read
+      id-token: write
+      packages: write
+    uses: utrains/ci-cd-pipeline-templates/.github/workflows/docker-build.yml@v2
+    with:
+      image_name: web-app # ← ECR repository name
+      registry: ecr
+      aws_region: us-east-1
+      push: ${{ github.event_name != 'pull_request' }}
+      sign: true
+    secrets:
+      aws_role: ${{ secrets.AWS_DEPLOY_ROLE_DEV }}
+
+  # ─── Continuous delivery (main only) ─────────────────────────────────────
+  deploy_dev:
+    if: github.ref == 'refs/heads/main'
+    needs: [image, sonar, codeql]
+    permissions:
+      contents: read
+      id-token: write
+    uses: utrains/ci-cd-pipeline-templates/.github/workflows/ecs-deploy.yml@v2
+    with:
+      environment: dev
+      environment_url: https://dev.example.com # ←
+      cluster: dev-cluster # ←
+      service: web-app # ←
+      container_name: web # ←
+      image: ${{ needs.image.outputs.image_ref }}
+    secrets:
+      aws_role: ${{ secrets.AWS_DEPLOY_ROLE_DEV }}
+
+  # The "prod" environment has required reviewers, so this job waits for approval.
+  deploy_prod:
+    needs: [image, deploy_dev]
+    permissions:
+      contents: read
+      id-token: write
+    uses: utrains/ci-cd-pipeline-templates/.github/workflows/ecs-deploy.yml@v2
+    with:
+      environment: prod
+      environment_url: https://www.example.com # ←
+      cluster: prod-cluster # ←
+      service: web-app # ←
+      container_name: web # ←
+      image: ${{ needs.image.outputs.image_ref }}
+    secrets:
+      aws_role: ${{ secrets.AWS_DEPLOY_ROLE_PROD }}
+
+  # ─── Notify ───────────────────────────────────────────────────────────────
+  notify:
+    if: always() && github.ref == 'refs/heads/main'
+    needs: [build, image, deploy_dev, deploy_prod]
+    permissions:
+      contents: read
+    uses: utrains/ci-cd-pipeline-templates/.github/workflows/notify-slack.yml@v2
+    with:
+      status: ${{ contains(needs.*.result, 'failure') && 'failure' || contains(needs.*.result, 'cancelled') && 'cancelled' || 'success' }}
+      message: "Web App `${{ needs.image.outputs.version }}` pipeline finished."
+    secrets:
+      slack_webhook_url: ${{ secrets.SLACK_WEBHOOK_URL }}

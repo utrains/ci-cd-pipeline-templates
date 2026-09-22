@@ -1,0 +1,39 @@
+name-template: "v$RESOLVED_VERSION"
+tag-template: "v$RESOLVED_VERSION"
+
+# Label PRs with major / minor / patch (or breaking-change / feature / fix) to drive the next version.
+version-resolver:
+  major:
+    labels: [major, breaking-change]
+  minor:
+    labels: [minor, feature, enhancement]
+  patch:
+    labels: [patch, fix, bug, security, dependencies, documentation, change]
+  default: patch
+
+categories:
+  - title: "⚠️ Breaking changes"
+    labels: [breaking-change, major]
+  - title: "🚀 Added"
+    labels: [feature, enhancement]
+  - title: "🛠 Changed"
+    labels: [change]
+  - title: "🐛 Fixed"
+    labels: [fix, bug]
+  - title: "🔒 Security"
+    labels: [security]
+  - title: "📦 Dependencies"
+    labels: [dependencies]
+    collapse-after: 5
+
+exclude-labels: [skip-changelog]
+
+change-template: "- $TITLE (#$NUMBER) @$AUTHOR"
+change-title-escapes: '\<*_&'
+
+template: |
+  ## What's changed
+
+  $CHANGES
+
+  **Full diff:** https://github.com/$OWNER/$REPOSITORY/compare/$PREVIOUS_TAG...v$RESOLVED_VERSION

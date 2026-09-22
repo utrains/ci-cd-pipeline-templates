@@ -1,0 +1,172 @@
+name: Deploy · EKS (Helm)
+
+# Reusable workflow: `helm upgrade --install` a release into an Amazon EKS cluster.
+# The release is rolled back automatically if it does not become healthy (atomic).
+# Docs: docs/workflows/deploy-eks-helm.md
+
+on:
+  workflow_call:
+    inputs:
+      cluster_name:
+        description: EKS cluster name.
+        type: string
+        required: true
+      aws_region:
+        description: AWS region.
+        type: string
+        default: us-east-1
+      namespace:
+        description: Kubernetes namespace of the release.
+        type: string
+        required: true
+      release_name:
+        description: Helm release name.
+        type: string
+        required: true
+      chart:
+        description: Local chart path (./charts/app), repo/chart, or oci:// reference.
+        type: string
+        required: true
+      chart_version:
+        description: Chart version (for remote charts).
+        type: string
+        default: ""
+      values_files:
+        description: Newline-separated values files, applied in order.
+        type: string
+        default: ""
+      set_values:
+        description: Newline-separated key=value overrides (passed with --set).
+        type: string
+        default: ""
+      image_repository:
+        description: Sets image.repository (leave empty to keep the chart value).
+        type: string
+        default: ""
+      image_tag:
+        description: Sets image.tag (leave empty to keep the chart value).
+        type: string
+        default: ""
+      create_namespace:
+        description: Create the namespace if it does not exist.
+        type: boolean
+        default: false
+      atomic:
+        description: Roll back automatically when the upgrade fails.
+        type: boolean
+        default: true
+      helm_timeout:
+        description: Time to wait for the release to become ready (Go duration).
+        type: string
+        default: 10m
+      dry_run:
+        description: Render and validate against the cluster without changing anything.
+        type: boolean
+        default: false
+      helm_version:
+        description: Helm version (3.x recommended).
+        type: string
+        default: v3.22.0
+      environment:
+        description: GitHub Environment to deploy into (approvals, env secrets, deployment history).
+        type: string
+        default: ""
+      environment_url:
+        description: URL shown on the deployment in GitHub.
+        type: string
+        default: ""
+      runs_on:
+        description: Runner label, or a JSON array of labels.
+        type: string
+        default: ubuntu-latest
+      timeout_minutes:
+        description: Job timeout in minutes.
+        type: number
+        default: 30
+    secrets:
+      aws_role:
+        description: IAM role ARN to assume via OIDC. It must be mapped to Kubernetes RBAC (EKS access entry).
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Helm ${{ inputs.release_name }} → ${{ inputs.cluster_name }}/${{ inputs.namespace }}
+    runs-on: ${{ startsWith(inputs.runs_on, '[') && fromJSON(inputs.runs_on) || inputs.runs_on }}
+    timeout-minutes: ${{ inputs.timeout_minutes }}
+    concurrency:
+      group: helm-${{ inputs.cluster_name }}-${{ inputs.namespace }}-${{ inputs.release_name }}
+      cancel-in-progress: false
+    environment:
+      name: ${{ inputs.environment }}
+      url: ${{ inputs.environment_url }}
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          aws-region: ${{ inputs.aws_region }}
+          role-to-assume: ${{ secrets.aws_role }}
+
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: ${{ inputs.helm_version }}
+
+      - name: Update kubeconfig
+        env:
+          CLUSTER: ${{ inputs.cluster_name }}
+          REGION: ${{ inputs.aws_region }}
+        run: aws eks update-kubeconfig --name "$CLUSTER" --region "$REGION"
+
+      - name: Helm upgrade --install
+        env:
+          RELEASE: ${{ inputs.release_name }}
+          CHART: ${{ inputs.chart }}
+          CHART_VERSION: ${{ inputs.chart_version }}
+          NAMESPACE: ${{ inputs.namespace }}
+          VALUES_FILES: ${{ inputs.values_files }}
+          SET_VALUES: ${{ inputs.set_values }}
+          IMAGE_REPOSITORY: ${{ inputs.image_repository }}
+          IMAGE_TAG: ${{ inputs.image_tag }}
+          CREATE_NS: ${{ inputs.create_namespace }}
+          ATOMIC: ${{ inputs.atomic }}
+          HELM_TIMEOUT: ${{ inputs.helm_timeout }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          args=(upgrade --install "$RELEASE" "$CHART" --namespace "$NAMESPACE" --wait --timeout "$HELM_TIMEOUT" --history-max 10)
+          if [ -n "$CHART_VERSION" ]; then args+=(--version "$CHART_VERSION"); fi
+          if [ "$CREATE_NS" = "true" ]; then args+=(--create-namespace); fi
+          if [ "$ATOMIC" = "true" ]; then args+=(--atomic); fi
+          if [ "$DRY_RUN" = "true" ]; then args+=(--dry-run=server); fi
+          while IFS= read -r f; do
+            if [ -n "$f" ]; then args+=(-f "$f"); fi
+          done <<< "$VALUES_FILES"
+          while IFS= read -r kv; do
+            if [ -n "$kv" ]; then args+=(--set "$kv"); fi
+          done <<< "$SET_VALUES"
+          if [ -n "$IMAGE_REPOSITORY" ]; then args+=(--set "image.repository=$IMAGE_REPOSITORY"); fi
+          if [ -n "$IMAGE_TAG" ]; then args+=(--set-string "image.tag=$IMAGE_TAG"); fi
+          echo "helm ${args[*]}"
+          helm "${args[@]}"
+
+      - name: Release status
+        if: always() && !inputs.dry_run
+        env:
+          RELEASE: ${{ inputs.release_name }}
+          NAMESPACE: ${{ inputs.namespace }}
+        run: |
+          helm status "$RELEASE" --namespace "$NAMESPACE" || true
+          {
+            echo "### Helm release \`$RELEASE\`"
+            echo '```'
+            helm history "$RELEASE" --namespace "$NAMESPACE" --max 5 || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

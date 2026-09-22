@@ -1,31 +1,122 @@
-name: .NET Build Template
+name: Build · .NET
+
+# Reusable workflow: restore, build, test (with coverage) and optionally publish a .NET project.
+# Docs: docs/workflows/build-dotnet.md
 
 on:
   workflow_call:
     inputs:
       dotnet_version:
+        description: .NET SDK version (e.g. 8.0.x, 10.0.x). Ignored when global_json_file is set.
         type: string
-        default: "8.0"
+        default: "10.0.x"
+      global_json_file:
+        description: Path to global.json to read the SDK version from.
+        type: string
+        default: ""
       project_path:
+        description: Solution or project file / directory.
         type: string
-        default: "./"
+        default: "."
+      configuration:
+        description: Build configuration (Release / Debug).
+        type: string
+        default: Release
+      run_tests:
+        description: Run `dotnet test` with coverage collection.
+        type: boolean
+        default: true
+      publish:
+        description: Run `dotnet publish` and upload the output as an artifact.
+        type: boolean
+        default: false
+      nuget_source:
+        description: Private NuGet feed URL (used with the nuget_token secret).
+        type: string
+        default: ""
+      artifact_name:
+        description: Base name for uploaded artifacts (test reports / coverage get a suffix).
+        type: string
+        default: dotnet-build
+      retention_days:
+        description: Artifact retention in days.
+        type: number
+        default: 7
+      runs_on:
+        description: Runner label, or a JSON array of labels.
+        type: string
+        default: ubuntu-latest
+      timeout_minutes:
+        description: Job timeout in minutes.
+        type: number
+        default: 30
+    secrets:
+      nuget_token:
+        description: Auth token for the private NuGet feed (nuget_source).
+        required: false
+    outputs:
+      artifact_name:
+        description: Base name for uploaded artifacts (test reports / coverage get a suffix).
+        value: ${{ jobs.build.outputs.artifact_name }}
+
+permissions:
+  contents: read
 
 jobs:
-  build_dotnet:
-    runs-on: ubuntu-latest
-
+  build:
+    name: Build & test
+    runs-on: ${{ startsWith(inputs.runs_on, '[') && fromJSON(inputs.runs_on) || inputs.runs_on }}
+    timeout-minutes: ${{ inputs.timeout_minutes }}
+    outputs:
+      artifact_name: ${{ inputs.publish && inputs.artifact_name || '' }}
+    env:
+      DOTNET_NOLOGO: "true"
+      DOTNET_CLI_TELEMETRY_OPTOUT: "true"
+      PROJECT: ${{ inputs.project_path }}
+      CONFIGURATION: ${{ inputs.configuration }}
+      NUGET_AUTH_TOKEN: ${{ secrets.nuget_token }}
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          dotnet-version: ${{ inputs.dotnet_version }}
+          persist-credentials: false
+
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: ${{ inputs.global_json_file == '' && inputs.dotnet_version || '' }}
+          global-json-file: ${{ inputs.global_json_file }}
+          source-url: ${{ inputs.nuget_source }}
 
       - name: Restore
-        run: dotnet restore ${{ inputs.project_path }}
+        run: dotnet restore "$PROJECT"
 
       - name: Build
-        run: dotnet build ${{ inputs.project_path }} --configuration Release
+        run: dotnet build "$PROJECT" --configuration "$CONFIGURATION" --no-restore
 
       - name: Test
-        run: dotnet test ${{ inputs.project_path }} --no-build --verbosity normal
+        if: inputs.run_tests
+        run: >
+          dotnet test "$PROJECT" --configuration "$CONFIGURATION" --no-build
+          --logger trx --results-directory ./test-results
+          --collect:"XPlat Code Coverage"
+
+      - name: Upload test results
+        if: always() && inputs.run_tests
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ inputs.artifact_name }}-test-results
+          path: ./test-results
+          retention-days: ${{ inputs.retention_days }}
+          if-no-files-found: ignore
+
+      - name: Publish
+        if: inputs.publish
+        run: dotnet publish "$PROJECT" --configuration "$CONFIGURATION" --no-build --output ./publish
+
+      - name: Upload publish output
+        if: inputs.publish
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ inputs.artifact_name }}
+          path: ./publish
+          retention-days: ${{ inputs.retention_days }}
+          if-no-files-found: error

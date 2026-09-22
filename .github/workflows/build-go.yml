@@ -1,25 +1,128 @@
-name: Go Build Template
+name: Build · Go
+
+# Reusable workflow: vet, lint (golangci-lint), test with race detector + coverage, and build a Go module.
+# Docs: docs/workflows/build-go.md
 
 on:
   workflow_call:
     inputs:
       go_version:
-        default: "1.22"
+        description: Go version. When empty, the version is read from go_version_file.
         type: string
+        default: ""
+      go_version_file:
+        description: File to read the Go version from, relative to working_directory.
+        type: string
+        default: go.mod
+      working_directory:
+        description: Directory containing go.mod.
+        type: string
+        default: "."
+      run_lint:
+        description: Run golangci-lint.
+        type: boolean
+        default: true
+      golangci_lint_version:
+        description: golangci-lint version.
+        type: string
+        default: v2.13.2
+      race:
+        description: Run tests with the race detector.
+        type: boolean
+        default: true
+      build_cmd:
+        description: Build command.
+        type: string
+        default: go build -trimpath ./...
+      artifact_path:
+        description: Build output to upload (e.g. bin/). Leave empty to skip.
+        type: string
+        default: ""
+      artifact_name:
+        description: Base name for uploaded artifacts (test reports / coverage get a suffix).
+        type: string
+        default: go-build
+      retention_days:
+        description: Artifact retention in days.
+        type: number
+        default: 7
+      runs_on:
+        description: Runner label, or a JSON array of labels.
+        type: string
+        default: ubuntu-latest
+      timeout_minutes:
+        description: Job timeout in minutes.
+        type: number
+        default: 30
+    outputs:
+      artifact_name:
+        description: Base name for uploaded artifacts (test reports / coverage get a suffix).
+        value: ${{ jobs.build.outputs.artifact_name }}
+
+permissions:
+  contents: read
 
 jobs:
-  build_go:
-    runs-on: ubuntu-latest
-
+  build:
+    name: Build & test
+    runs-on: ${{ startsWith(inputs.runs_on, '[') && fromJSON(inputs.runs_on) || inputs.runs_on }}
+    timeout-minutes: ${{ inputs.timeout_minutes }}
+    outputs:
+      artifact_name: ${{ inputs.artifact_path != '' && inputs.artifact_name || '' }}
+    defaults:
+      run:
+        working-directory: ${{ inputs.working_directory }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: ${{ inputs.go_version }}
+          go-version-file: ${{ inputs.go_version == '' && format('{0}/{1}', inputs.working_directory, inputs.go_version_file) || '' }}
+          cache-dependency-path: ${{ inputs.working_directory }}/go.sum
 
-      - name: Build
-        run: go build ./...
+      - name: Verify modules
+        run: go mod verify
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Lint
+        if: inputs.run_lint
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+        with:
+          version: ${{ inputs.golangci_lint_version }}
+          working-directory: ${{ inputs.working_directory }}
 
       - name: Test
-        run: go test ./...
+        env:
+          RACE: ${{ inputs.race }}
+        run: |
+          flags=(-coverprofile=coverage.out -covermode=atomic)
+          if [ "$RACE" = "true" ]; then flags+=(-race); fi
+          go test "${flags[@]}" ./...
+
+      - name: Upload coverage
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ inputs.artifact_name }}-coverage
+          path: ${{ inputs.working_directory }}/coverage.out
+          retention-days: ${{ inputs.retention_days }}
+          if-no-files-found: ignore
+
+      - name: Build
+        env:
+          CMD: ${{ inputs.build_cmd }}
+        run: eval "$CMD"
+
+      - name: Upload build artifact
+        if: inputs.artifact_path != ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ inputs.artifact_name }}
+          path: ${{ inputs.working_directory }}/${{ inputs.artifact_path }}
+          retention-days: ${{ inputs.retention_days }}
+          if-no-files-found: error

@@ -1,0 +1,51 @@
+name: Gate · Manual approval
+
+# Reusable workflow: pause the pipeline until a reviewer approves the target GitHub Environment.
+# The approval itself comes from the environment's protection rules
+# (Settings → Environments → <name> → Required reviewers); this workflow just gives the gate a
+# clear, reusable stage with context in the run summary.
+# Tip: deploy workflows here also accept `environment:` directly — use this gate when you want
+# one approval to cover several subsequent jobs.
+# Docs: docs/workflows/approval.md
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: GitHub Environment with required reviewers configured.
+        type: string
+        required: true
+      message:
+        description: Context shown to approvers in the run summary.
+        type: string
+        default: Deployment approval required.
+      runs_on:
+        description: Runner label, or a JSON array of labels.
+        type: string
+        default: ubuntu-latest
+
+permissions:
+  contents: read
+
+jobs:
+  approve:
+    name: Approval · ${{ inputs.environment }}
+    runs-on: ${{ startsWith(inputs.runs_on, '[') && fromJSON(inputs.runs_on) || inputs.runs_on }}
+    timeout-minutes: 5 # counts only after approval; waiting time is governed by the environment (max 30 days)
+    environment: ${{ inputs.environment }}
+    steps:
+      - name: Record approval
+        env:
+          ENVIRONMENT: ${{ inputs.environment }}
+          MESSAGE: ${{ inputs.message }}
+          ACTOR: ${{ github.triggering_actor }}
+          SHA: ${{ github.sha }}
+        run: |
+          {
+            echo "### ✅ Approved for \`$ENVIRONMENT\`"
+            echo ""
+            echo "$MESSAGE"
+            echo ""
+            echo "- Commit: \`$SHA\`"
+            echo "- Triggered by: @$ACTOR"
+          } >> "$GITHUB_STEP_SUMMARY"

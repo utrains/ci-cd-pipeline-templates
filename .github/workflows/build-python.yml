@@ -1,0 +1,164 @@
+name: Build · Python
+
+# Reusable workflow: install, lint, test (pytest) and optionally build a Python package.
+# Supports pip, poetry and uv.
+# Docs: docs/workflows/build-python.md
+
+on:
+  workflow_call:
+    inputs:
+      python_version:
+        description: Python version.
+        type: string
+        default: "3.13"
+      package_manager:
+        description: "pip | poetry | uv"
+        type: string
+        default: pip
+      working_directory:
+        description: Directory containing pyproject.toml / requirements.txt.
+        type: string
+        default: "."
+      install_cmd:
+        description: Override the install command. Empty = sensible default for the package manager.
+        type: string
+        default: ""
+      lint_cmd:
+        description: Lint command, run inside the project environment (e.g. "ruff check ."). Leave empty to skip.
+        type: string
+        default: ""
+      test_cmd:
+        description: Test command, run inside the project environment. Leave empty to skip.
+        type: string
+        default: pytest --junitxml=test-results/junit.xml
+      build_package:
+        description: Build sdist/wheel and upload them as an artifact.
+        type: boolean
+        default: false
+      artifact_name:
+        description: Base name for uploaded artifacts (test reports / coverage get a suffix).
+        type: string
+        default: python-build
+      retention_days:
+        description: Artifact retention in days.
+        type: number
+        default: 7
+      runs_on:
+        description: Runner label, or a JSON array of labels.
+        type: string
+        default: ubuntu-latest
+      timeout_minutes:
+        description: Job timeout in minutes.
+        type: number
+        default: 30
+    outputs:
+      artifact_name:
+        description: Base name for uploaded artifacts (test reports / coverage get a suffix).
+        value: ${{ jobs.build.outputs.artifact_name }}
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build & test
+    runs-on: ${{ startsWith(inputs.runs_on, '[') && fromJSON(inputs.runs_on) || inputs.runs_on }}
+    timeout-minutes: ${{ inputs.timeout_minutes }}
+    outputs:
+      artifact_name: ${{ inputs.build_package && inputs.artifact_name || '' }}
+    defaults:
+      run:
+        working-directory: ${{ inputs.working_directory }}
+    env:
+      PM: ${{ inputs.package_manager }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Poetry must be on PATH before setup-python can cache its dependencies.
+      - name: Install poetry
+        if: inputs.package_manager == 'poetry'
+        run: pipx install poetry
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ inputs.python_version }}
+          cache: ${{ inputs.package_manager != 'uv' && inputs.package_manager || '' }}
+
+      - name: Set up uv
+        if: inputs.package_manager == 'uv'
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true
+          working-directory: ${{ inputs.working_directory }}
+
+      - name: Install dependencies
+        env:
+          CMD: ${{ inputs.install_cmd }}
+        run: |
+          if [ -n "$CMD" ]; then eval "$CMD"; exit 0; fi
+          case "$PM" in
+            uv)     uv sync --all-extras --dev ;;
+            poetry) poetry install --no-interaction --all-extras ;;
+            pip)
+              python -m pip install --upgrade pip
+              for f in requirements.txt requirements-dev.txt; do
+                if [ -f "$f" ]; then pip install -r "$f"; fi
+              done
+              if [ -f pyproject.toml ]; then pip install -e .; fi
+              ;;
+            *) echo "::error::Unsupported package_manager '$PM'"; exit 1 ;;
+          esac
+
+      - name: Resolve run prefix
+        id: prefix
+        run: |
+          case "$PM" in
+            uv)     echo "run=uv run" >> "$GITHUB_OUTPUT" ;;
+            poetry) echo "run=poetry run" >> "$GITHUB_OUTPUT" ;;
+            *)      echo "run=" >> "$GITHUB_OUTPUT" ;;
+          esac
+
+      - name: Lint
+        if: inputs.lint_cmd != ''
+        env:
+          CMD: ${{ inputs.lint_cmd }}
+          RUN: ${{ steps.prefix.outputs.run }}
+        run: eval "$RUN $CMD"
+
+      - name: Test
+        if: inputs.test_cmd != ''
+        env:
+          CMD: ${{ inputs.test_cmd }}
+          RUN: ${{ steps.prefix.outputs.run }}
+        run: eval "$RUN $CMD"
+
+      - name: Upload test results
+        if: always() && inputs.test_cmd != ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ inputs.artifact_name }}-test-results
+          path: |
+            ${{ inputs.working_directory }}/test-results/
+            ${{ inputs.working_directory }}/coverage.xml
+          retention-days: ${{ inputs.retention_days }}
+          if-no-files-found: ignore
+
+      - name: Build package
+        if: inputs.build_package
+        run: |
+          case "$PM" in
+            uv)     uv build ;;
+            poetry) poetry build ;;
+            *)      pip install build && python -m build ;;
+          esac
+
+      - name: Upload package
+        if: inputs.build_package
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ inputs.artifact_name }}
+          path: ${{ inputs.working_directory }}/dist/
+          retention-days: ${{ inputs.retention_days }}
+          if-no-files-found: error

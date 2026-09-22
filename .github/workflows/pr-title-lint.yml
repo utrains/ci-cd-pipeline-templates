@@ -1,0 +1,45 @@
+name: Quality · PR title lint
+
+# Reusable workflow: enforce Conventional Commit PR titles (feat:, fix:, chore: ...), which keeps
+# squash-merge history clean and feeds release-note categorisation.
+# Docs: docs/workflows/pr-title-lint.md
+
+on:
+  workflow_call:
+    inputs:
+      types:
+        description: Newline-separated allowed types. Empty = the Conventional Commits defaults.
+        type: string
+        default: ""
+      scopes:
+        description: Newline-separated allowed scopes. Empty = any scope.
+        type: string
+        default: ""
+      require_scope:
+        description: 'Require a scope, e.g. feat(api): ...'
+        type: boolean
+        default: false
+      runs_on:
+        description: Runner label, or a JSON array of labels.
+        type: string
+        default: ubuntu-latest
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: PR title
+    if: github.event_name == 'pull_request' || github.event_name == 'pull_request_target'
+    runs-on: ${{ startsWith(inputs.runs_on, '[') && fromJSON(inputs.runs_on) || inputs.runs_on }}
+    timeout-minutes: 5
+    permissions:
+      pull-requests: read
+    steps:
+      - uses: amannn/action-semantic-pull-request@48f256284bd46cdaab1048c3721360e808335d50 # v6.1.1
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        with:
+          types: ${{ inputs.types }}
+          scopes: ${{ inputs.scopes }}
+          requireScope: ${{ inputs.require_scope }}

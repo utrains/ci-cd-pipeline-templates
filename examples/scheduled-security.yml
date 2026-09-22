@@ -1,0 +1,67 @@
+# Example: nightly security sweep, independent of code changes.
+# New CVEs are published every day, so re-scan even when nothing was pushed.
+# Findings land in Security → Code scanning; the Slack message fires only on failure.
+
+name: Security (scheduled)
+
+on:
+  schedule:
+    - cron: "17 3 * * *" # 03:17 UTC daily
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  secrets_full_history:
+    permissions:
+      contents: read
+      security-events: write
+    uses: utrains/ci-cd-pipeline-templates/.github/workflows/secret-scan.yml@v2
+    with:
+      full_history: true
+
+  dependencies:
+    permissions:
+      contents: read
+      id-token: write
+      security-events: write
+    uses: utrains/ci-cd-pipeline-templates/.github/workflows/trivy-scan.yml@v2
+    with:
+      scan_type: fs
+      fail_on_findings: false
+
+  running_image:
+    permissions:
+      contents: read
+      id-token: write
+      security-events: write
+    uses: utrains/ci-cd-pipeline-templates/.github/workflows/trivy-scan.yml@v2
+    with:
+      scan_type: image
+      image: 123456789012.dkr.ecr.us-east-1.amazonaws.com/web-app:main # ←
+      registry: ecr
+    secrets:
+      aws_role: ${{ secrets.AWS_READONLY_ROLE }}
+
+  codeql:
+    permissions:
+      contents: read
+      actions: read
+      security-events: write
+    uses: utrains/ci-cd-pipeline-templates/.github/workflows/codeql.yml@v2
+    with:
+      languages: '["javascript-typescript","actions"]'
+      queries: security-and-quality
+
+  notify_failure:
+    if: failure()
+    needs: [secrets_full_history, dependencies, running_image, codeql]
+    permissions:
+      contents: read
+    uses: utrains/ci-cd-pipeline-templates/.github/workflows/notify-slack.yml@v2
+    with:
+      status: failure
+      title: Nightly security scan
+      message: One or more security scans failed. Check the Code scanning alerts.
+    secrets:
+      slack_webhook_url: ${{ secrets.SLACK_SECURITY_WEBHOOK_URL }}

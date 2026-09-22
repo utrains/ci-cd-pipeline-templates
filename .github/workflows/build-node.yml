@@ -1,31 +1,149 @@
-name: Node.js Build Template
+name: Build · Node.js
+
+# Reusable workflow: install, lint, test and build a Node.js project.
+# Docs: docs/workflows/build-node.md
 
 on:
   workflow_call:
     inputs:
       node_version:
-        default: "20"
+        description: Node.js version. Ignored when node_version_file is set.
         type: string
+        default: "24"
+      node_version_file:
+        description: File to read the Node.js version from (e.g. .nvmrc, package.json).
+        type: string
+        default: ""
+      package_manager:
+        description: "Package manager used for dependency caching: npm | yarn | pnpm."
+        type: string
+        default: npm
+      working_directory:
+        description: Directory containing package.json.
+        type: string
+        default: "."
+      registry_url:
+        description: Private npm registry URL (used with the npm_token secret).
+        type: string
+        default: ""
       install_cmd:
-        default: "npm install"
+        description: Command that installs dependencies.
         type: string
+        default: npm ci
+      lint_cmd:
+        description: Lint command. Leave empty to skip.
+        type: string
+        default: ""
+      test_cmd:
+        description: Test command. Leave empty to skip.
+        type: string
+        default: npm test --if-present
       build_cmd:
-        default: "npm run build"
+        description: Build command. Leave empty to skip.
         type: string
+        default: npm run build --if-present
+      artifact_path:
+        description: Build output to upload (e.g. dist/). Leave empty to skip the upload.
+        type: string
+        default: ""
+      artifact_name:
+        description: Name of the uploaded build artifact.
+        type: string
+        default: node-build
+      coverage_path:
+        description: Coverage report directory, uploaded as the "<artifact_name>-coverage" artifact when present.
+        type: string
+        default: coverage
+      retention_days:
+        description: Artifact retention in days.
+        type: number
+        default: 7
+      runs_on:
+        description: Runner label, or a JSON array of labels (e.g. '["self-hosted","linux"]').
+        type: string
+        default: ubuntu-latest
+      timeout_minutes:
+        description: Job timeout in minutes.
+        type: number
+        default: 30
+    secrets:
+      npm_token:
+        description: Auth token for a private npm registry.
+        required: false
+    outputs:
+      artifact_name:
+        description: Name of the uploaded build artifact (empty when nothing was uploaded).
+        value: ${{ jobs.build.outputs.artifact_name }}
+
+permissions:
+  contents: read
 
 jobs:
-  node_build:
-    runs-on: ubuntu-latest
-
+  build:
+    name: Build & test
+    runs-on: ${{ startsWith(inputs.runs_on, '[') && fromJSON(inputs.runs_on) || inputs.runs_on }}
+    timeout-minutes: ${{ inputs.timeout_minutes }}
+    outputs:
+      artifact_name: ${{ inputs.artifact_path != '' && inputs.artifact_name || '' }}
+    defaults:
+      run:
+        working-directory: ${{ inputs.working_directory }}
+    env:
+      NODE_AUTH_TOKEN: ${{ secrets.npm_token }}
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          node-version: ${{ inputs.node_version }}
+          persist-credentials: false
+
+      - name: Enable Corepack (yarn / pnpm)
+        if: inputs.package_manager != 'npm'
+        run: corepack enable
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ inputs.node_version_file == '' && inputs.node_version || '' }}
+          node-version-file: ${{ inputs.node_version_file != '' && format('{0}/{1}', inputs.working_directory, inputs.node_version_file) || '' }}
+          cache: ${{ inputs.package_manager }}
+          cache-dependency-path: ${{ inputs.working_directory }}
+          registry-url: ${{ inputs.registry_url }}
 
       - name: Install dependencies
-        run: ${{ inputs.install_cmd }}
+        env:
+          CMD: ${{ inputs.install_cmd }}
+        run: eval "$CMD"
 
-      - name: Build project
-        run: ${{ inputs.build_cmd }}
+      - name: Lint
+        if: inputs.lint_cmd != ''
+        env:
+          CMD: ${{ inputs.lint_cmd }}
+        run: eval "$CMD"
+
+      - name: Test
+        if: inputs.test_cmd != ''
+        env:
+          CMD: ${{ inputs.test_cmd }}
+        run: eval "$CMD"
+
+      - name: Build
+        if: inputs.build_cmd != ''
+        env:
+          CMD: ${{ inputs.build_cmd }}
+        run: eval "$CMD"
+
+      - name: Upload coverage
+        if: always() && inputs.coverage_path != ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ inputs.artifact_name }}-coverage
+          path: ${{ inputs.working_directory }}/${{ inputs.coverage_path }}
+          retention-days: ${{ inputs.retention_days }}
+          if-no-files-found: ignore
+
+      - name: Upload build artifact
+        if: inputs.artifact_path != ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ inputs.artifact_name }}
+          path: ${{ inputs.working_directory }}/${{ inputs.artifact_path }}
+          retention-days: ${{ inputs.retention_days }}
+          if-no-files-found: error

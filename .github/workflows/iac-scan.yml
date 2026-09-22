@@ -1,0 +1,76 @@
+name: Scan · IaC (Checkov)
+
+# Reusable workflow: policy-as-code scanning of Terraform, CloudFormation, Kubernetes, Helm,
+# Dockerfiles and GitHub Actions with Checkov.
+# Docs: docs/workflows/iac-scan.md
+
+on:
+  workflow_call:
+    inputs:
+      directory:
+        description: Directory to scan.
+        type: string
+        default: "."
+      framework:
+        description: Comma-separated frameworks (terraform, kubernetes, helm, dockerfile, cloudformation, github_actions, ...). Empty = all.
+        type: string
+        default: ""
+      skip_check:
+        description: Comma-separated check IDs to skip (e.g. CKV_AWS_18,CKV_AWS_144).
+        type: string
+        default: ""
+      config_file:
+        description: Path to a .checkov.yaml config file.
+        type: string
+        default: ""
+      soft_fail:
+        description: Report findings without failing the job.
+        type: boolean
+        default: false
+      download_external_modules:
+        description: Download external Terraform modules before scanning.
+        type: boolean
+        default: true
+      upload_sarif:
+        description: Upload findings to GitHub code scanning (needs security-events write).
+        type: boolean
+        default: true
+      runs_on:
+        description: Runner label, or a JSON array of labels.
+        type: string
+        default: ubuntu-latest
+
+permissions:
+  contents: read
+
+jobs:
+  checkov:
+    name: Checkov IaC scan
+    runs-on: ${{ startsWith(inputs.runs_on, '[') && fromJSON(inputs.runs_on) || inputs.runs_on }}
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Run Checkov
+        uses: bridgecrewio/checkov-action@444c9db6fa75e2d9c19ebf1fde7322089be9009e # v12.3125.0
+        with:
+          directory: ${{ inputs.directory }}
+          framework: ${{ inputs.framework }}
+          skip_check: ${{ inputs.skip_check }}
+          config_file: ${{ inputs.config_file }}
+          soft_fail: ${{ inputs.soft_fail }}
+          download_external_modules: ${{ inputs.download_external_modules }}
+          output_format: cli,sarif
+          output_file_path: console,checkov-results.sarif
+
+      - name: Upload SARIF
+        if: always() && inputs.upload_sarif && hashFiles('checkov-results.sarif') != ''
+        uses: github/codeql-action/upload-sarif@1c5b675653bb5c22dbe9b12b556ec555138e09fd # v4.38.1
+        with:
+          sarif_file: checkov-results.sarif
+          category: checkov

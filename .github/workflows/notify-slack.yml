@@ -1,0 +1,87 @@
+name: Notify · Slack
+
+# Reusable workflow: post a pipeline status message to Slack via an incoming webhook.
+# Replaces slack-team-notifica.yml (the webhook URL is now a secret, not a plain input).
+# Docs: docs/workflows/notify-slack.md
+
+on:
+  workflow_call:
+    inputs:
+      status:
+        description: "success | failure | cancelled | info — typically computed from needs.*.result."
+        type: string
+        default: info
+      title:
+        description: Message title. Empty = "<repo> · <workflow>".
+        type: string
+        default: ""
+      message:
+        description: Message body (Slack mrkdwn).
+        type: string
+        default: ""
+      include_run_link:
+        description: Add a 'View run' button linking to this workflow run.
+        type: boolean
+        default: true
+      runs_on:
+        description: Runner label, or a JSON array of labels.
+        type: string
+        default: ubuntu-latest
+    secrets:
+      slack_webhook_url:
+        description: Slack incoming-webhook URL.
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  notify:
+    name: Slack notification
+    runs-on: ${{ startsWith(inputs.runs_on, '[') && fromJSON(inputs.runs_on) || inputs.runs_on }}
+    timeout-minutes: 5
+    steps:
+      # Build the payload with jq so arbitrary text in title/message can never break the JSON.
+      - name: Build payload
+        env:
+          STATUS: ${{ inputs.status }}
+          TITLE: ${{ inputs.title || format('{0} · {1}', github.repository, github.workflow) }}
+          MESSAGE: ${{ inputs.message }}
+          RUN_URL: ${{ inputs.include_run_link && format('{0}/{1}/actions/runs/{2}', github.server_url, github.repository, github.run_id) || '' }}
+          REF: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          case "$STATUS" in
+            success)   icon=":white_check_mark:"; color="#2eb67d" ;;
+            failure)   icon=":x:";                color="#e01e5a" ;;
+            cancelled) icon=":no_entry_sign:";    color="#9e9e9e" ;;
+            *)         icon=":information_source:"; color="#36c5f0" ;;
+          esac
+          jq -n \
+            --arg icon "$icon" --arg color "$color" --arg status "$STATUS" \
+            --arg title "$TITLE" --arg message "$MESSAGE" --arg run "$RUN_URL" \
+            --arg ref "$REF" --arg sha "${SHA:0:7}" --arg actor "$ACTOR" '
+            {
+              text: "\($icon) \($title): \($status)",
+              attachments: [{
+                color: $color,
+                blocks: ([
+                  { type: "section", text: { type: "mrkdwn", text: "*\($icon) \($title)* — `\($status)`" } }
+                ]
+                + (if $message != "" then [{ type: "section", text: { type: "mrkdwn", text: $message } }] else [] end)
+                + [{ type: "context", elements: [
+                      { type: "mrkdwn", text: "`\($ref)` @ `\($sha)` · by \($actor)" }
+                    ] }]
+                + (if $run != "" then [{ type: "actions", elements: [
+                      { type: "button", text: { type: "plain_text", text: "View run" }, url: $run }
+                    ] }] else [] end))
+              }]
+            }' > slack-payload.json
+
+      - name: Send to Slack
+        uses: slackapi/slack-github-action@dcb1066f776dd043e64d0e8ba94ca15cc7e1875d # v4.0.0
+        with:
+          webhook: ${{ secrets.slack_webhook_url }}
+          webhook-type: incoming-webhook
+          payload-file-path: slack-payload.json

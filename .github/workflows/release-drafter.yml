@@ -1,64 +1,92 @@
-name: "Release Drafter + Changelog Updater"
+name: Release · Drafter + changelog
+
+# Keeps a draft GitHub Release up to date from merged PRs, and when a release is published
+# opens a PR that adds its notes to CHANGELOG.md (a PR, so it works with branch protection).
+#
+# Runs for this repository and can also be called from other repositories (workflow_call);
+# callers need their own .github/release-drafter.yml config.
+# Docs: docs/workflows/release-drafter.md
 
 on:
   push:
-    branches:
-      - main
-
+    branches: [main]
   release:
     types: [published]
+  workflow_call:
+    inputs:
+      config_name:
+        description: Release Drafter config file in the calling repo's .github directory.
+        type: string
+        default: release-drafter.yml
+      changelog_file:
+        description: Changelog file to update when a release is published.
+        type: string
+        default: CHANGELOG.md
+
+permissions:
+  contents: read
 
 jobs:
-
-  # -----------------------------
-  # 1. Release Draft Automation
-  # -----------------------------
   release_draft:
-    # Only run on main branch push
+    name: Update release draft
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
-
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: read
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Run Release Drafter
-        uses: release-drafter/release-drafter@v6
+      - uses: release-drafter/release-drafter@34d80673e067bdc0c24568d3af899c216adcfaa9 # v7.7.0
         with:
-          config-name: release-drafter.yml
+          config-name: ${{ inputs.config_name || 'release-drafter.yml' }}
 
-
-  # -----------------------------
-  # 2. CHANGELOG Auto-Update Job
-  # -----------------------------
   update_changelog:
+    name: Add release to changelog
     if: github.event_name == 'release' && github.event.action == 'published'
     runs-on: ubuntu-latest
-
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+    env:
+      CHANGELOG: ${{ inputs.changelog_file || 'CHANGELOG.md' }}
+      TAG: ${{ github.event.release.tag_name }}
+      # Passed via env, never interpolated into the script: release bodies are untrusted text.
+      BODY: ${{ github.event.release.body }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
 
-      - name: Update CHANGELOG.md with release notes
+      - name: Insert release notes
         run: |
-          NEW_TAG="${{ github.event.release.tag_name }}"
-          RELEASE_DATE=$(date +'%Y-%m-%d')
-          RELEASE_BODY="${{ github.event.release.body }}"
+          date=$(date -u +%Y-%m-%d)
+          [ -f "$CHANGELOG" ] || printf '# Changelog\n\n## [Unreleased]\n' > "$CHANGELOG"
+          if grep -qF "## [$TAG]" "$CHANGELOG"; then
+            echo "$TAG is already in $CHANGELOG"; exit 0
+          fi
+          printf '## [%s] - %s\n\n%s\n\n' "$TAG" "$date" "$BODY" > entry.md
+          # Insert the entry before the first released version (keeps "## [Unreleased]" on top).
+          awk -v entry=entry.md '
+            !done && /^## \[/ && !/^## \[Unreleased\]/ {
+              while ((getline line < entry) > 0) print line
+              done = 1
+            }
+            { print }
+            END {
+              if (!done) { print ""; while ((getline line < entry) > 0) print line }
+            }' "$CHANGELOG" > "$CHANGELOG.tmp"
+          mv "$CHANGELOG.tmp" "$CHANGELOG"
+          rm -f entry.md
 
-          echo "Updating CHANGELOG.md for release $NEW_TAG"
-
-          {
-            echo "## $NEW_TAG — $RELEASE_DATE"
-            echo ""
-            echo "$RELEASE_BODY"
-            echo ""
-            cat CHANGELOG.md
-          } > CHANGELOG.tmp
-
-          mv CHANGELOG.tmp CHANGELOG.md
-
-      - name: Commit & push updated CHANGELOG.md
-        run: |
-          git config user.name "github-actions"
-          git config user.email "github-actions@github.com"
-          git add CHANGELOG.md
-          git commit -m "Update CHANGELOG.md for release ${{ github.event.release.tag_name }}"
-          git push
+      - name: Open changelog PR
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
+        with:
+          branch: changelog/${{ github.event.release.tag_name }}
+          base: ${{ github.event.repository.default_branch }}
+          commit-message: "docs(changelog): add ${{ github.event.release.tag_name }}"
+          title: "docs(changelog): add ${{ github.event.release.tag_name }}"
+          body: Adds the notes of release ${{ github.event.release.tag_name }} to the changelog.
+          labels: documentation,skip-changelog
+          add-paths: ${{ inputs.changelog_file || 'CHANGELOG.md' }}

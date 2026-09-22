@@ -1,0 +1,142 @@
+name: Scan · Trivy
+
+# Reusable workflow: vulnerability / misconfiguration / secret scanning with Trivy.
+#   scan_type=image  → scan a container image (optionally from a private ECR registry)
+#   scan_type=fs     → scan the repository's dependencies (lockfiles) and secrets
+#   scan_type=config → scan IaC (Terraform, Kubernetes, Dockerfile, Helm) for misconfigurations
+# Docs: docs/workflows/trivy-scan.md
+
+on:
+  workflow_call:
+    inputs:
+      scan_type:
+        description: "image | fs | config"
+        type: string
+        default: image
+      image:
+        description: Image reference to scan (required when scan_type=image).
+        type: string
+        default: ""
+      scan_ref:
+        description: Path to scan for fs / config scans.
+        type: string
+        default: "."
+      severity:
+        description: Severities that fail the job.
+        type: string
+        default: CRITICAL,HIGH
+      ignore_unfixed:
+        description: Ignore vulnerabilities without an available fix.
+        type: boolean
+        default: true
+      fail_on_findings:
+        description: Fail the job when findings at the given severity exist.
+        type: boolean
+        default: true
+      trivyignores:
+        description: Path to a .trivyignore file in the calling repository.
+        type: string
+        default: .trivyignore
+      upload_sarif:
+        description: Upload results to GitHub code scanning (needs security-events write).
+        type: boolean
+        default: true
+      registry:
+        description: "Registry login before pulling the image: none | ecr"
+        type: string
+        default: none
+      aws_region:
+        description: AWS region.
+        type: string
+        default: us-east-1
+      trivy_version:
+        description: Trivy version.
+        type: string
+        default: v0.70.0
+      runs_on:
+        description: Runner label, or a JSON array of labels.
+        type: string
+        default: ubuntu-latest
+      timeout_minutes:
+        description: Job timeout in minutes.
+        type: number
+        default: 20
+    secrets:
+      aws_role:
+        description: IAM role ARN used to pull from ECR (registry=ecr).
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  trivy_scan:
+    name: Trivy ${{ inputs.scan_type }} scan
+    runs-on: ${{ startsWith(inputs.runs_on, '[') && fromJSON(inputs.runs_on) || inputs.runs_on }}
+    timeout-minutes: ${{ inputs.timeout_minutes }}
+    permissions:
+      contents: read
+      id-token: write
+      security-events: write
+    steps:
+      - name: Validate inputs
+        env:
+          SCAN_TYPE: ${{ inputs.scan_type }}
+          IMAGE: ${{ inputs.image }}
+        run: |
+          case "$SCAN_TYPE" in image|fs|config) ;; *) echo "::error::scan_type must be image, fs or config"; exit 1 ;; esac
+          if [ "$SCAN_TYPE" = "image" ] && [ -z "$IMAGE" ]; then echo "::error::'image' is required when scan_type=image"; exit 1; fi
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Configure AWS credentials (OIDC)
+        if: inputs.registry == 'ecr'
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          aws-region: ${{ inputs.aws_region }}
+          role-to-assume: ${{ secrets.aws_role }}
+
+      - name: Login to Amazon ECR
+        if: inputs.registry == 'ecr'
+        uses: aws-actions/amazon-ecr-login@03f1aad4c6c7ffd436567f42f9384779290529bd # v2.1.7
+
+      # Pass 1: full report as SARIF for GitHub code scanning (never fails the job).
+      - name: Trivy scan (SARIF)
+        if: inputs.upload_sarif
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          version: ${{ inputs.trivy_version }}
+          scan-type: ${{ inputs.scan_type }}
+          image-ref: ${{ inputs.image }}
+          scan-ref: ${{ inputs.scan_ref }}
+          severity: ${{ inputs.severity }}
+          ignore-unfixed: ${{ inputs.ignore_unfixed }}
+          trivyignores: ${{ hashFiles(inputs.trivyignores) != '' && inputs.trivyignores || '' }}
+          format: sarif
+          output: trivy-results.sarif
+          limit-severities-for-sarif: true
+          exit-code: "0"
+
+      - name: Upload SARIF
+        if: always() && inputs.upload_sarif && hashFiles('trivy-results.sarif') != ''
+        uses: github/codeql-action/upload-sarif@1c5b675653bb5c22dbe9b12b556ec555138e09fd # v4.38.1
+        with:
+          sarif_file: trivy-results.sarif
+          category: trivy-${{ inputs.scan_type }}
+
+      # Pass 2: human-readable table in the log; this is the gate.
+      - name: Trivy scan (gate)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          version: ${{ inputs.trivy_version }}
+          scan-type: ${{ inputs.scan_type }}
+          image-ref: ${{ inputs.image }}
+          scan-ref: ${{ inputs.scan_ref }}
+          severity: ${{ inputs.severity }}
+          ignore-unfixed: ${{ inputs.ignore_unfixed }}
+          trivyignores: ${{ hashFiles(inputs.trivyignores) != '' && inputs.trivyignores || '' }}
+          format: table
+          exit-code: ${{ inputs.fail_on_findings && '1' || '0' }}
+          skip-setup-trivy: ${{ inputs.upload_sarif }}

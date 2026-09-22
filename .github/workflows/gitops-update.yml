@@ -1,0 +1,133 @@
+name: Deploy · GitOps image bump
+
+# Reusable workflow: update an image tag (or any YAML value) in a GitOps config repository,
+# either by opening a pull request (default, auditable) or by committing directly.
+# Argo CD / Flux then reconciles the cluster from that repository.
+# Docs: docs/workflows/gitops-update.md
+
+on:
+  workflow_call:
+    inputs:
+      config_repo:
+        description: owner/name of the GitOps config repository.
+        type: string
+        required: true
+      config_branch:
+        description: Branch of the config repository to update / target with the PR.
+        type: string
+        default: main
+      file_path:
+        description: YAML file to edit, e.g. envs/prod/values.yaml.
+        type: string
+        required: true
+      yaml_path:
+        description: yq path of the value to set, e.g. .image.tag
+        type: string
+        default: .image.tag
+      value:
+        description: New value, e.g. the image tag or digest.
+        type: string
+        required: true
+      create_pr:
+        description: Open a pull request instead of committing directly to config_branch.
+        type: boolean
+        default: true
+      pr_labels:
+        description: Comma-separated labels for the pull request.
+        type: string
+        default: gitops,automated
+      commit_message:
+        description: Commit message / PR title. Empty = generated.
+        type: string
+        default: ""
+      runs_on:
+        description: Runner label, or a JSON array of labels.
+        type: string
+        default: ubuntu-latest
+    secrets:
+      gitops_token:
+        description: Token with contents (+ pull-requests) write on config_repo — a GitHub App token is recommended.
+        required: true
+    outputs:
+      pull_request_url:
+        description: URL of the pull request opened in the config repo (create_pr=true).
+        value: ${{ jobs.bump.outputs.pull_request_url }}
+
+permissions:
+  contents: read
+
+jobs:
+  bump:
+    name: Bump ${{ inputs.file_path }}
+    runs-on: ${{ startsWith(inputs.runs_on, '[') && fromJSON(inputs.runs_on) || inputs.runs_on }}
+    timeout-minutes: 10
+    concurrency:
+      group: gitops-${{ inputs.config_repo }}-${{ inputs.file_path }}
+      cancel-in-progress: false
+    outputs:
+      pull_request_url: ${{ steps.pr.outputs.pull-request-url }}
+    env:
+      FILE: ${{ inputs.file_path }}
+      YAML_PATH: ${{ inputs.yaml_path }}
+      VALUE: ${{ inputs.value }}
+      MESSAGE: "${{ inputs.commit_message || format('chore(deploy): set {0} {1} to {2}', inputs.file_path, inputs.yaml_path, inputs.value) }}"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ inputs.config_repo }}
+          ref: ${{ inputs.config_branch }}
+          token: ${{ secrets.gitops_token }}
+          # Credentials are kept only for direct-commit mode (git push); this job uploads no artifacts.
+          persist-credentials: ${{ !inputs.create_pr }} # zizmor: ignore[artipacked]
+
+      - name: Update value
+        id: update
+        run: |
+          if [ ! -f "$FILE" ]; then echo "::error::$FILE not found in config repo"; exit 1; fi
+          current=$(yq eval "$YAML_PATH" "$FILE")
+          echo "Current: $current → New: $VALUE"
+          NEW_VALUE="$VALUE" yq eval -i "$YAML_PATH = strenv(NEW_VALUE)" "$FILE"
+          if git diff --quiet; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "Value already up to date — nothing to do."
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            git diff
+          fi
+
+      - name: Open pull request
+        id: pr
+        if: steps.update.outputs.changed == 'true' && inputs.create_pr
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
+        with:
+          token: ${{ secrets.gitops_token }}
+          base: ${{ inputs.config_branch }}
+          branch: gitops/${{ github.event.repository.name }}/${{ github.run_id }}
+          delete-branch: true
+          commit-message: ${{ env.MESSAGE }}
+          title: ${{ env.MESSAGE }}
+          labels: ${{ inputs.pr_labels }}
+          body: |
+            Automated update from ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+            | | |
+            |---|---|
+            | File | `${{ inputs.file_path }}` |
+            | Path | `${{ inputs.yaml_path }}` |
+            | Value | `${{ inputs.value }}` |
+            | Source commit | ${{ github.repository }}@${{ github.sha }} |
+
+      - name: Commit directly
+        if: steps.update.outputs.changed == 'true' && !inputs.create_pr
+        env:
+          BRANCH: ${{ inputs.config_branch }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "$MESSAGE"
+          for i in 1 2 3; do
+            if git push origin "HEAD:$BRANCH"; then exit 0; fi
+            echo "Push rejected, rebasing (attempt $i)…"
+            git pull --rebase origin "$BRANCH"
+          done
+          echo "::error::Could not push after 3 attempts"; exit 1

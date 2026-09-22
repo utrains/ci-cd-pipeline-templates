@@ -1,39 +1,152 @@
-name: ECS Deploy Template
+name: Deploy · Amazon ECS
+
+# Reusable workflow: roll a new image out to an ECS service by registering a new task-definition
+# revision, then wait for the service to become stable.
+# Protect production by pointing `environment` at a GitHub Environment with required reviewers.
+# Docs: docs/workflows/ecs-deploy.md
 
 on:
   workflow_call:
     inputs:
       cluster:
+        description: ECS cluster name.
         type: string
         required: true
       service:
+        description: ECS service name.
         type: string
         required: true
       image:
+        description: Image to deploy. Prefer the immutable image_ref (image@sha256:...) output of docker-build.yml.
         type: string
         required: true
+      container_name:
+        description: Name of the container in the task definition that receives the new image.
+        type: string
+        required: true
+      task_definition_file:
+        description: Task-definition JSON in the calling repo. Empty = start from the service's current task definition.
+        type: string
+        default: ""
+      environment_variables:
+        description: Newline-separated KEY=VALUE pairs to set on the container.
+        type: string
+        default: ""
+      aws_region:
+        description: AWS region.
+        type: string
+        default: us-east-1
+      environment:
+        description: GitHub Environment to deploy into (enables approvals, environment secrets and deployment history).
+        type: string
+        default: ""
+      environment_url:
+        description: URL shown on the deployment in GitHub.
+        type: string
+        default: ""
+      wait_for_stability:
+        description: Wait for the ECS service to reach a steady state.
+        type: boolean
+        default: true
+      wait_minutes:
+        description: Maximum minutes to wait for the service to stabilise.
+        type: number
+        default: 15
+      timeout_minutes:
+        description: Job timeout; keep it above wait_minutes.
+        type: number
+        default: 30
+      runs_on:
+        description: Runner label, or a JSON array of labels.
+        type: string
+        default: ubuntu-latest
     secrets:
       aws_role:
+        description: IAM role ARN to assume via OIDC.
         required: true
+    outputs:
+      task_definition_arn:
+        description: ARN of the task-definition revision that was deployed.
+        value: ${{ jobs.deploy.outputs.task_definition_arn }}
+
+permissions:
+  contents: read
 
 jobs:
-  deploy_ecs:
-    runs-on: ubuntu-latest
+  deploy:
+    name: Deploy ${{ inputs.service }}
+    runs-on: ${{ startsWith(inputs.runs_on, '[') && fromJSON(inputs.runs_on) || inputs.runs_on }}
+    timeout-minutes: ${{ inputs.timeout_minutes }}
+    # Never run two deployments to the same service at once; queue instead of cancelling.
+    concurrency:
+      group: ecs-deploy-${{ inputs.cluster }}-${{ inputs.service }}
+      cancel-in-progress: false
+    environment:
+      name: ${{ inputs.environment }}
+      url: ${{ inputs.environment_url }}
     permissions:
-      id-token: write
       contents: read
-
+      id-token: write
+    outputs:
+      task_definition_arn: ${{ steps.deploy.outputs.task-definition-arn }}
     steps:
-      - name: Configure AWS OIDC
-        uses: aws-actions/configure-aws-credentials@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: inputs.task_definition_file != ''
         with:
+          persist-credentials: false
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          aws-region: ${{ inputs.aws_region }}
           role-to-assume: ${{ secrets.aws_role }}
-          aws-region: us-east-1
+
+      - name: Resolve current task definition
+        id: current
+        if: inputs.task_definition_file == ''
+        env:
+          CLUSTER: ${{ inputs.cluster }}
+          SERVICE: ${{ inputs.service }}
+        run: |
+          arn=$(aws ecs describe-services --cluster "$CLUSTER" --services "$SERVICE" \
+                  --query 'services[0].taskDefinition' --output text)
+          if [ -z "$arn" ] || [ "$arn" = "None" ]; then
+            echo "::error::Service $SERVICE not found in cluster $CLUSTER"; exit 1
+          fi
+          echo "Current task definition: $arn"
+          echo "arn=$arn" >> "$GITHUB_OUTPUT"
+
+      - name: Render task definition
+        id: render
+        uses: aws-actions/amazon-ecs-render-task-definition@138c24f321fdbdf7edee4a685519d253cae2cdea # v1.9.0
+        with:
+          task-definition: ${{ inputs.task_definition_file }}
+          task-definition-arn: ${{ steps.current.outputs.arn }}
+          container-name: ${{ inputs.container_name }}
+          image: ${{ inputs.image }}
+          environment-variables: ${{ inputs.environment_variables }}
 
       - name: Deploy to ECS
+        id: deploy
+        uses: aws-actions/amazon-ecs-deploy-task-definition@c465972ecbd160473f22e683363b422a5412a3de # v2.6.3
+        with:
+          task-definition: ${{ steps.render.outputs.task-definition }}
+          cluster: ${{ inputs.cluster }}
+          service: ${{ inputs.service }}
+          wait-for-service-stability: ${{ inputs.wait_for_stability }}
+          wait-for-minutes: ${{ inputs.wait_minutes }}
+
+      - name: Summary
+        env:
+          ARN: ${{ steps.deploy.outputs.task-definition-arn }}
+          IMAGE: ${{ inputs.image }}
+          CLUSTER: ${{ inputs.cluster }}
+          SERVICE: ${{ inputs.service }}
         run: |
-          aws ecs update-service \
-            --cluster ${{ inputs.cluster }} \
-            --service ${{ inputs.service }} \
-            --force-new-deployment \
-            --region us-east-1
+          {
+            echo "### ECS deployment"
+            echo "- Cluster: \`$CLUSTER\`"
+            echo "- Service: \`$SERVICE\`"
+            echo "- Image: \`$IMAGE\`"
+            echo "- Task definition: \`$ARN\`"
+          } >> "$GITHUB_STEP_SUMMARY"

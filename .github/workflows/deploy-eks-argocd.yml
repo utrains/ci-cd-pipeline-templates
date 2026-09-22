@@ -1,0 +1,138 @@
+name: Deploy · Argo CD
+
+# Reusable workflow: trigger and wait for an Argo CD application sync, optionally overriding
+# a Helm parameter or Kustomize image first. For pure GitOps (commit the new tag to a config
+# repo and let Argo CD pick it up) use gitops-update.yml instead.
+# Docs: docs/workflows/deploy-eks-argocd.md
+
+on:
+  workflow_call:
+    inputs:
+      argocd_server:
+        description: Argo CD API server hostname (no scheme), e.g. argocd.example.com.
+        type: string
+        required: true
+      argocd_app:
+        description: Argo CD Application name.
+        type: string
+        required: true
+      helm_parameters:
+        description: Newline-separated Helm parameters to set on the app (e.g. image.tag=1.2.3).
+        type: string
+        default: ""
+      kustomize_images:
+        description: Newline-separated Kustomize image overrides (e.g. my-app=registry/my-app:1.2.3).
+        type: string
+        default: ""
+      revision:
+        description: Git revision to sync to. Empty = the application's target revision.
+        type: string
+        default: ""
+      prune:
+        description: Delete resources that are no longer in Git.
+        type: boolean
+        default: false
+      wait_timeout:
+        description: Seconds to wait for the app to become Synced and Healthy.
+        type: number
+        default: 600
+      grpc_web:
+        description: Use gRPC-Web (needed behind most ingress controllers / load balancers).
+        type: boolean
+        default: true
+      argocd_version:
+        description: Argo CD CLI version.
+        type: string
+        default: v3.5.3
+      environment:
+        description: GitHub Environment to deploy into (approvals, env secrets, deployment history).
+        type: string
+        default: ""
+      environment_url:
+        description: URL shown on the deployment in GitHub.
+        type: string
+        default: ""
+      runs_on:
+        description: Runner label, or a JSON array of labels. Use a self-hosted runner if Argo CD is not publicly reachable.
+        type: string
+        default: ubuntu-latest
+      timeout_minutes:
+        description: Job timeout in minutes.
+        type: number
+        default: 20
+    secrets:
+      argocd_token:
+        description: Argo CD API token (project-scoped account token recommended).
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  sync:
+    name: Argo CD sync ${{ inputs.argocd_app }}
+    runs-on: ${{ startsWith(inputs.runs_on, '[') && fromJSON(inputs.runs_on) || inputs.runs_on }}
+    timeout-minutes: ${{ inputs.timeout_minutes }}
+    concurrency:
+      group: argocd-${{ inputs.argocd_server }}-${{ inputs.argocd_app }}
+      cancel-in-progress: false
+    environment:
+      name: ${{ inputs.environment }}
+      url: ${{ inputs.environment_url }}
+    env:
+      ARGOCD_SERVER: ${{ inputs.argocd_server }}
+      ARGOCD_AUTH_TOKEN: ${{ secrets.argocd_token }}
+      ARGOCD_OPTS: ${{ inputs.grpc_web && '--grpc-web' || '' }}
+      APP: ${{ inputs.argocd_app }}
+    steps:
+      - name: Install Argo CD CLI (checksum verified)
+        env:
+          VERSION: ${{ inputs.argocd_version }}
+        run: |
+          base="https://github.com/argoproj/argo-cd/releases/download/${VERSION}"
+          curl -sSfL -o argocd-linux-amd64 "$base/argocd-linux-amd64"
+          curl -sSfL -o cli_checksums.txt "$base/cli_checksums.txt"
+          grep " argocd-linux-amd64\$" cli_checksums.txt | sha256sum -c -
+          sudo install -m 0755 argocd-linux-amd64 /usr/local/bin/argocd
+          rm -f argocd-linux-amd64 cli_checksums.txt
+          argocd version --client --short
+
+      - name: Override parameters
+        if: inputs.helm_parameters != '' || inputs.kustomize_images != ''
+        env:
+          HELM_PARAMS: ${{ inputs.helm_parameters }}
+          KUSTOMIZE_IMAGES: ${{ inputs.kustomize_images }}
+        run: |
+          args=()
+          while IFS= read -r p; do
+            if [ -n "$p" ]; then args+=(--helm-set-string "$p"); fi
+          done <<< "$HELM_PARAMS"
+          while IFS= read -r i; do
+            if [ -n "$i" ]; then args+=(--kustomize-image "$i"); fi
+          done <<< "$KUSTOMIZE_IMAGES"
+          argocd app set "$APP" "${args[@]}"
+
+      - name: Sync
+        env:
+          REVISION: ${{ inputs.revision }}
+          PRUNE: ${{ inputs.prune }}
+        run: |
+          args=(app sync "$APP" --retry-limit 3)
+          if [ -n "$REVISION" ]; then args+=(--revision "$REVISION"); fi
+          if [ "$PRUNE" = "true" ]; then args+=(--prune); fi
+          argocd "${args[@]}"
+
+      - name: Wait for Synced + Healthy
+        env:
+          WAIT_TIMEOUT: ${{ inputs.wait_timeout }}
+        run: argocd app wait "$APP" --sync --health --timeout "$WAIT_TIMEOUT"
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### Argo CD application \`$APP\`"
+            echo '```'
+            argocd app get "$APP" --show-operation 2>&1 | head -n 60 || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

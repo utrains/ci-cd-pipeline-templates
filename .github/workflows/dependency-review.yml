@@ -1,0 +1,65 @@
+name: Scan · Dependency review
+
+# Reusable workflow: block pull requests that add vulnerable or disallowed-license dependencies.
+# Only meaningful on pull_request events; it is skipped otherwise.
+# Requires the dependency graph (on by default for public repos, needs GitHub Advanced Security for private repos).
+# Docs: docs/workflows/dependency-review.md
+
+on:
+  workflow_call:
+    inputs:
+      fail_on_severity:
+        description: "low | moderate | high | critical"
+        type: string
+        default: high
+      fail_on_scopes:
+        description: Comma-separated dependency scopes to check (runtime, development, unknown).
+        type: string
+        default: runtime
+      allow_licenses:
+        description: Comma-separated SPDX licenses that are allowed (mutually exclusive with deny_licenses).
+        type: string
+        default: ""
+      deny_licenses:
+        description: Comma-separated SPDX licenses that are denied (e.g. "GPL-3.0-only, AGPL-3.0-only").
+        type: string
+        default: ""
+      config_file:
+        description: Path to a dependency-review config file (overrides the inputs above).
+        type: string
+        default: ""
+      comment_summary:
+        description: "Post a summary comment on the PR: always | on-failure | never"
+        type: string
+        default: on-failure
+      warn_only:
+        description: Report findings without failing the check.
+        type: boolean
+        default: false
+      runs_on:
+        description: Runner label, or a JSON array of labels.
+        type: string
+        default: ubuntu-latest
+
+permissions:
+  contents: read
+
+jobs:
+  dependency_review:
+    name: Dependency review
+    if: github.event_name == 'pull_request' || github.event_name == 'pull_request_target'
+    runs-on: ${{ startsWith(inputs.runs_on, '[') && fromJSON(inputs.runs_on) || inputs.runs_on }}
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          fail-on-severity: ${{ inputs.fail_on_severity }}
+          fail-on-scopes: ${{ inputs.fail_on_scopes }}
+          allow-licenses: ${{ inputs.allow_licenses }}
+          deny-licenses: ${{ inputs.deny_licenses }}
+          config-file: ${{ inputs.config_file }}
+          comment-summary-in-pr: ${{ inputs.comment_summary }}
+          warn-only: ${{ inputs.warn_only }}
