@@ -36,7 +36,7 @@ jobs:
       contents: write
       pull-requests: read
     steps:
-      - uses: release-drafter/release-drafter@34d80673e067bdc0c24568d3af899c216adcfaa9 # v7.7.0
+      - uses: release-drafter/release-drafter@d1a19e60e81a7e650d00a7de9277f87e439117ea # v7.11.0
         with:
           config-name: ${{ inputs.config_name || 'release-drafter.yml' }}
 
@@ -81,7 +81,7 @@ jobs:
           rm -f entry.md
 
       - name: Open changelog PR
-        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
+        uses: peter-evans/create-pull-request@3ffccacd46053766916f087ce41d627c0b8cf2d1 # v8.1.3
         with:
           branch: changelog/${{ github.event.release.tag_name }}
           base: ${{ github.event.repository.default_branch }}
